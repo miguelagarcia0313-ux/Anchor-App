@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import '../shared/anchor_module.dart';
 import '../modules/finance/finance_module.dart';
 import '../modules/tasks/tasks_module.dart';
@@ -29,7 +30,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Anchor')),
+      appBar: AppBar(
+        title: const Text('Anchor'),
+        actions: [
+          IconButton(
+            onPressed: FirebaseAuth.instance.signOut,
+            icon: const Icon(Icons.logout),
+            tooltip: 'Sign out',
+          ),
+        ],
+      ),
       body: ListView.builder(
         padding: const EdgeInsets.all(12),
         itemCount: _enabledModules.length,

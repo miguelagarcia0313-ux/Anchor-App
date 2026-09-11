@@ -2,7 +2,7 @@
 
 **One place for everything — finances, tasks, work hours, and health.**
 
-Anchor replaces the spreadsheets and 8-10 apps most students use to track money, tasks, work hours, and health with a single modular mobile app. Each life area is a self-contained widget module, and you choose which ones show up on your dashboard.
+Anchor replaces the spreadsheets and 8-10 apps most students use to track money, tasks, and health with a single modular mobile app. Each life area is a self-contained widget module, and you choose which ones show up on your dashboard.
 
 Senior design project — Fall 2026
 Project lead: Michael Garcia
@@ -20,7 +20,6 @@ Every semester, students rebuild the same spreadsheets to track work hours, fina
 | 🧭 Dashboard shell | In progress | Add, remove, and reorder widget modules |
 | 💰 Finance | In progress | Spend-vs-budget rings, "money saved if you cut it" projection |
 | ✅ Tasks & reminders | In progress | To-dos, due dates, notifications |
-| 🕒 Work hours | Planned | Clock in/out, auto-calculated pay |
 | 🏋️ Health | Planned | Workouts, body weight trend, diet, medicine reminders |
 
 See [`docs/Anchor_Project_Plan.docx`](docs/Anchor_Project_Plan.docx) for the full project plan, architecture rationale, timeline, and team roles.
@@ -42,6 +41,31 @@ cd anchor-app
 flutter pub get
 flutter run
 ```
+
+### Firebase authentication setup
+
+The first screen is a Firebase email/password login. Before running the app, connect it to a Firebase project:
+
+1. Create or select a project in the [Firebase Console](https://console.firebase.google.com/).
+2. Install the Firebase CLI and sign in with `firebase login`.
+3. Install the FlutterFire CLI with `dart pub global activate flutterfire_cli`.
+4. From the project root, run `flutterfire configure` and select Android, iOS, macOS, and Web as needed. This creates `lib/firebase_options.dart` and registers the app identifiers.
+5. In Firebase Console, open **Authentication > Sign-in method**, enable **Email/Password**, and save.
+6. Run `flutter pub get`, then `flutter run`.
+
+The generated `lib/firebase_options.dart` is project-specific and is intentionally not included in this repository. The authentication gate sends signed-in users to the dashboard and everyone else to the login screen. The login screen also supports creating a new email/password account.
+
+### Run in a web browser
+
+From the project root, start Flutter's web server:
+
+```bash
+flutter run -d web-server --web-port 8080 --web-hostname 0.0.0.0
+```
+
+Keep that terminal running, then open [http://localhost:8080](http://localhost:8080) in your browser. If `localhost:8080` is not reachable from your browser, forward port `8080` in VS Code's **Ports** panel and open the forwarded URL instead. Enable **Email/Password** under Firebase Console's **Authentication > Sign-in method** before creating an account or signing in.
+
+To stop the app, focus the terminal running Flutter and press `q` or `Ctrl+C`. To start it again, run the same `flutter run` command above and reopen [http://localhost:8080](http://localhost:8080).
 
 Run `flutter doctor` first if this is your first time setting up Flutter — it'll flag anything missing.
 
@@ -70,9 +94,7 @@ No other files need to change — that's the architectural bet this project is t
 
 ## Contributing
 
-We're a student team split across iOS/Flutter engineering, architecture, design, and QA roles. If you're interested in joining, see the **Recruiting plan** section of the project plan doc, or reach out to the project lead.
-
-Branch per feature (`git checkout -b your-module-name`), open a PR into `main`, and tag the architecture lead for review on anything touching `lib/shared/`.
+Branch per feature (`git checkout -b your-module-name`), open a PR into `main`, and tag the project lead for review on anything touching `lib/shared/`.
 
 ## License
 
