@@ -213,7 +213,7 @@ class _TasksDetailViewState extends State<_TasksDetailView> {
       floatingActionButton: FloatingActionButton.extended(
         onPressed: _createEntry,
         icon: const Icon(Icons.add),
-        label: const Text('Add item'),
+        label: const Text('Add Task/Reminder'),
       ),
     );
   }
@@ -237,7 +237,7 @@ class _EmptyTasksState extends StatelessWidget {
             ),
             const SizedBox(height: 16),
             Text(
-              'Nothing here yet',
+              'No tasks or reminders yet!',
               style: Theme.of(context).textTheme.titleLarge,
             ),
             const SizedBox(height: 8),
@@ -362,7 +362,7 @@ class _TaskEditorDialogState extends State<_TaskEditorDialog> {
         : '${MaterialLocalizations.of(context).formatMediumDate(_dueAt!)} at '
             '${MaterialLocalizations.of(context).formatTimeOfDay(TimeOfDay.fromDateTime(_dueAt!))}';
     return AlertDialog(
-      title: Text(widget.entry == null ? 'Add item' : 'Edit item'),
+      title: Text(widget.entry == null ? 'Add Task/Reminder' : 'Edit Task/Reminder'),
       content: SingleChildScrollView(
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -372,8 +372,8 @@ class _TaskEditorDialogState extends State<_TaskEditorDialog> {
               autofocus: true,
               textCapitalization: TextCapitalization.sentences,
               decoration: const InputDecoration(
-                labelText: 'Title',
-                hintText: 'e.g. Call the dentist',
+                labelText: 'Task/Reminder',
+                hintText: 'e.g. Reminder to call the dentist',
               ),
               onSubmitted: (_) => _save(),
             ),
@@ -384,12 +384,12 @@ class _TaskEditorDialogState extends State<_TaskEditorDialog> {
               maxLines: 2,
               decoration: const InputDecoration(
                 labelText: 'Notes',
-                hintText: 'Optional details',
+                hintText: 'Extra Details',
               ),
             ),
             SwitchListTile.adaptive(
               contentPadding: EdgeInsets.zero,
-              title: const Text('Reminder'),
+              title: const Text('Set as Reminder'),
               value: _isReminder,
               onChanged: (value) {
                 setState(() {
