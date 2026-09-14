@@ -389,7 +389,7 @@ class _TaskEditorDialogState extends State<_TaskEditorDialog> {
             ),
             SwitchListTile.adaptive(
               contentPadding: EdgeInsets.zero,
-              title: const Text('Set as Reminder'),
+              title: const Text('Set tasks as Reminder'),
               value: _isReminder,
               onChanged: (value) {
                 setState(() {
