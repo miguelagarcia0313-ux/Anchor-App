@@ -1,5 +1,23 @@
 import 'package:flutter/material.dart';
 import '../../shared/anchor_module.dart';
+import '../insights/mock_data.dart';
+import '../insights/insights_calculations.dart';
+
+/// DEMO WIRING: uses mock data + the insights calculations directly.
+/// Once persistence (drift) exists, swap generateMockEntries() for a real
+/// data read -- everything else here stays the same, since it only
+/// depends on getting a List<TrackableEntry> from somewhere.
+///
+/// Also note: category budgets ($150 groceries, etc.) aren't part of the
+/// shared TrackableEntry model -- there's no field for "my grocery budget
+/// is $150" anywhere yet. This demo hardcodes them in _demoBudgets below.
+
+const _demoBudgets = {
+  'groceries': 150.0,
+  'eating_out': 100.0,
+  'subscriptions': 30.0,
+  'entertainment': 50.0,
+};
 
 class FinanceModule implements AnchorModule {
   @override
@@ -10,21 +28,101 @@ class FinanceModule implements AnchorModule {
 
   @override
   Widget buildSummaryCard(BuildContext context) {
-    // TODO: replace with real spend-ring summary (fl_chart)
-    return const Card(
-      child: ListTile(
-        leading: Icon(Icons.pie_chart_outline),
-        title: Text('Finance'),
-        subtitle: Text('Spend rings + savings projection go here'),
+    final entries = generateMockEntries();
+    final categories = _demoBudgets.keys.toList();
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Finance', style: TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 8),
+            ...categories.take(2).map((category) {
+              final pace = calculateBudgetPace(
+                entries: entries,
+                category: category,
+                monthlyBudget: _demoBudgets[category]!,
+              );
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: Text(
+                  '${_displayName(category)}: \$${pace.spent.toStringAsFixed(0)} / \$${pace.monthlyBudget.toStringAsFixed(0)}',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: pace.isOverPace ? Colors.red[700] : Colors.black87,
+                  ),
+                ),
+              );
+            }),
+          ],
+        ),
       ),
     );
   }
 
   @override
   Widget buildDetailView(BuildContext context) {
+    final entries = generateMockEntries();
+    final categories = _demoBudgets.keys.toList();
+
     return Scaffold(
       appBar: AppBar(title: const Text('Finance')),
-      body: const Center(child: Text('Finance detail screen — build here')),
+      body: ListView.builder(
+        padding: const EdgeInsets.all(16),
+        itemCount: categories.length,
+        itemBuilder: (context, index) {
+          final category = categories[index];
+          final pace = calculateBudgetPace(
+            entries: entries,
+            category: category,
+            monthlyBudget: _demoBudgets[category]!,
+          );
+          final ratio = (pace.spent / pace.monthlyBudget).clamp(0.0, 1.0);
+
+          return Card(
+            margin: const EdgeInsets.only(bottom: 12),
+            child: ListTile(
+              leading: SizedBox(
+                width: 40,
+                height: 40,
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    CircularProgressIndicator(
+                      value: ratio,
+                      strokeWidth: 4,
+                      color: pace.isOverPace ? Colors.red : Colors.blue,
+                      backgroundColor: Colors.grey[300],
+                    ),
+                  ],
+                ),
+              ),
+              title: Text(_displayName(category)),
+              subtitle: Text(
+                '\$${pace.spent.toStringAsFixed(2)} / \$${pace.monthlyBudget.toStringAsFixed(2)}'
+                '${pace.isOverPace ? "  •  ahead of pace" : ""}',
+              ),
+            ),
+          );
+        },
+      ),
     );
+  }
+
+  String _displayName(String category) {
+    switch (category) {
+      case 'eating_out':
+        return 'Eating Out';
+      case 'groceries':
+        return 'Groceries';
+      case 'subscriptions':
+        return 'Subscriptions';
+      case 'entertainment':
+        return 'Entertainment';
+      default:
+        return category;
+    }
   }
 }
