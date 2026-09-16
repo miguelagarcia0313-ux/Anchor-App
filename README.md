@@ -92,6 +92,21 @@ lib/
 
 No other files need to change — that's the architectural bet this project is testing.
 
+### Rules for linking a new model to its data
+
+When a module introduces a model that must survive app restarts, follow these rules:
+
+1. Give every model a stable `id`. Do not use the list index as an identifier.
+2. Include the module name in the stored record, such as `moduleType: 'finance'`, so records cannot be confused between modules. Use `TrackableEntry` in `lib/shared/trackable_entry.dart` when the data fits its shared shape.
+3. Implement both serialization directions: a `toMap()`/JSON method for saving and a `fromMap()`/JSON factory for loading. Store dates in ISO-8601 format and convert booleans consistently.
+4. Link user-owned data to `FirebaseAuth.instance.currentUser!.uid`. Storage keys and database queries must include the UID; never put all users' records under one global key.
+5. Load the current user's records before showing the module's editable UI. Show a loading state while the asynchronous load is in progress.
+6. Save after every create, edit, delete, and completion/status change. Do not rely on an in-memory list as the source of truth.
+7. Keep module IDs stable once released. Add the module to `_allModules` and use the same ID for dashboard preferences, filtering, and stored records.
+8. Add a test that creates a model, recreates the module, and verifies the data returns. Also verify that two user IDs cannot see each other's data.
+
+Dashboard module visibility follows the same user-scoped pattern through `lib/shell/module_preferences.dart`. Local storage survives app sessions on the same device; use a Firebase database when the model must sync across devices.
+
 ## Contributing
 
 Branch per feature (`git checkout -b your-module-name`), open a PR into `main`, and tag the project lead for review on anything touching `lib/shared/`.

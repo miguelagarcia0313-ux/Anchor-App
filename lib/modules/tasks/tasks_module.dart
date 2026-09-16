@@ -1,6 +1,9 @@
-import 'package:flutter/material.dart';
-import '../../shared/anchor_module.dart';
+import 'dart:convert';
 
+import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+import '../../shared/anchor_module.dart';
 
 class _TaskEntry {
   _TaskEntry({
@@ -16,6 +19,28 @@ class _TaskEntry {
   bool isReminder;
   DateTime? dueAt;
   bool isComplete;
+
+  Map<String, dynamic> toMap() {
+    return {
+      'title': title,
+      'notes': notes,
+      'isReminder': isReminder,
+      'dueAt': dueAt?.toIso8601String(),
+      'isComplete': isComplete,
+    };
+  }
+
+  factory _TaskEntry.fromMap(Map<String, dynamic> map) {
+    return _TaskEntry(
+      title: map['title'] as String? ?? '',
+      notes: map['notes'] as String? ?? '',
+      isReminder: map['isReminder'] as bool? ?? false,
+      dueAt: map['dueAt'] == null
+          ? null
+          : DateTime.tryParse(map['dueAt'] as String),
+      isComplete: map['isComplete'] as bool? ?? false,
+    );
+  }
 }
 
 class _TaskDraft {
@@ -33,8 +58,11 @@ class _TaskDraft {
 }
 
 class TasksModule implements AnchorModule {
+  static const _storageKey = 'tasks.entries';
+
   final List<_TaskEntry> _entries = [];
   final ValueNotifier<int> _revision = ValueNotifier(0);
+  late final Future<void> _ready = _loadEntries();
 
   @override
   String get id => 'tasks';
@@ -42,11 +70,23 @@ class TasksModule implements AnchorModule {
   @override
   String get displayName => 'Tasks';
 
+  Future<void> get ready => _ready;
+
   @override
   Widget buildSummaryCard(BuildContext context) {
     return ValueListenableBuilder<int>(
       valueListenable: _revision,
       builder: (context, revision, child) {
+        if (_entries.isEmpty && _revision.value == 0) {
+          return const Card(
+            child: ListTile(
+              leading: Icon(Icons.check_circle_outline),
+              title: Text('Tasks & Reminders'),
+              subtitle: Text('Loading tasks...'),
+              trailing: Icon(Icons.chevron_right),
+            ),
+          );
+        }
         final openCount = _entries.where((entry) => !entry.isComplete).length;
         final reminderCount = _entries
             .where((entry) => entry.isReminder && !entry.isComplete)
@@ -86,6 +126,7 @@ class TasksModule implements AnchorModule {
       ),
     );
     _notifyChanged();
+    _persistEntries();
   }
 
   void _updateEntry(_TaskEntry entry, _TaskDraft draft) {
@@ -95,11 +136,36 @@ class TasksModule implements AnchorModule {
       ..isReminder = draft.isReminder
       ..dueAt = draft.dueAt;
     _notifyChanged();
+    _persistEntries();
   }
 
   void _deleteEntry(_TaskEntry entry) {
     _entries.remove(entry);
     _notifyChanged();
+    _persistEntries();
+  }
+
+  Future<void> _loadEntries() async {
+    final preferences = await SharedPreferences.getInstance();
+    final storedEntries = preferences.getStringList(_storageKey) ?? [];
+    _entries
+      ..clear()
+      ..addAll(
+        storedEntries.map(
+          (encodedEntry) => _TaskEntry.fromMap(
+            jsonDecode(encodedEntry) as Map<String, dynamic>,
+          ),
+        ),
+      );
+    _notifyChanged();
+  }
+
+  Future<void> _persistEntries() async {
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setStringList(
+      _storageKey,
+      _entries.map((entry) => jsonEncode(entry.toMap())).toList(),
+    );
   }
 }
 
@@ -161,60 +227,75 @@ class _TasksDetailViewState extends State<_TasksDetailView> {
 
   @override
   Widget build(BuildContext context) {
-    final entries = widget.module._entries;
-    return Scaffold(
-      appBar: AppBar(title: const Text('Tasks & Reminders')),
-      body: entries.isEmpty
-          ? const _EmptyTasksState()
-          : ListView.separated(
-              padding: const EdgeInsets.fromLTRB(12, 12, 12, 96),
-              itemCount: entries.length,
-              separatorBuilder: (context, index) => const SizedBox(height: 8),
-              itemBuilder: (context, index) {
-                final entry = entries[index];
-                return Card(
-                  child: ListTile(
-                    onTap: () => _editEntry(entry),
-                    leading: Checkbox(
-                      value: entry.isComplete,
-                      onChanged: (value) {
-                        setState(() {
-                          entry.isComplete = value ?? false;
-                        });
-                        widget.module._notifyChanged();
-                      },
-                    ),
-                    title: Text(
-                      entry.title,
-                      style: TextStyle(
-                        decoration: entry.isComplete
-                            ? TextDecoration.lineThrough
-                            : null,
+    return FutureBuilder<void>(
+      future: widget.module.ready,
+      builder: (context, snapshot) {
+        if (snapshot.connectionState != ConnectionState.done) {
+          return const Scaffold(
+            body: Center(child: CircularProgressIndicator()),
+          );
+        }
+        final entries = widget.module._entries;
+        return Scaffold(
+          appBar: AppBar(title: const Text('Tasks & Reminders')),
+          body: entries.isEmpty
+              ? const _EmptyTasksState()
+              : ListView.separated(
+                  padding: const EdgeInsets.fromLTRB(12, 12, 12, 96),
+                  itemCount: entries.length,
+                  separatorBuilder: (context, index) =>
+                      const SizedBox(height: 8),
+                  itemBuilder: (context, index) {
+                    final entry = entries[index];
+                    return Card(
+                      child: ListTile(
+                        onTap: () => _editEntry(entry),
+                        leading: Checkbox(
+                          value: entry.isComplete,
+                          onChanged: (value) {
+                            setState(() {
+                              entry.isComplete = value ?? false;
+                            });
+                            widget.module._notifyChanged();
+                            widget.module._persistEntries();
+                          },
+                        ),
+                        title: Text(
+                          entry.title,
+                          style: TextStyle(
+                            decoration: entry.isComplete
+                                ? TextDecoration.lineThrough
+                                : null,
+                          ),
+                        ),
+                        subtitle: _EntrySubtitle(entry: entry),
+                        trailing: PopupMenuButton<String>(
+                          onSelected: (action) {
+                            if (action == 'edit') {
+                              _editEntry(entry);
+                            } else {
+                              _removeEntry(entry);
+                            }
+                          },
+                          itemBuilder: (context) => const [
+                            PopupMenuItem(value: 'edit', child: Text('Edit')),
+                            PopupMenuItem(
+                              value: 'delete',
+                              child: Text('Delete'),
+                            ),
+                          ],
+                        ),
                       ),
-                    ),
-                    subtitle: _EntrySubtitle(entry: entry),
-                    trailing: PopupMenuButton<String>(
-                      onSelected: (action) {
-                        if (action == 'edit') {
-                          _editEntry(entry);
-                        } else {
-                          _removeEntry(entry);
-                        }
-                      },
-                      itemBuilder: (context) => const [
-                        PopupMenuItem(value: 'edit', child: Text('Edit')),
-                        PopupMenuItem(value: 'delete', child: Text('Delete')),
-                      ],
-                    ),
-                  ),
-                );
-              },
-            ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _createEntry,
-        icon: const Icon(Icons.add),
-        label: const Text('Add Task/Reminder'),
-      ),
+                    );
+                  },
+                ),
+          floatingActionButton: FloatingActionButton.extended(
+            onPressed: _createEntry,
+            icon: const Icon(Icons.add),
+            label: const Text('Add Task/Reminder'),
+          ),
+        );
+      },
     );
   }
 }
@@ -312,9 +393,7 @@ class _TaskEditorDialogState extends State<_TaskEditorDialog> {
       context: context,
       firstDate: DateTime(now.year, now.month, now.day),
       lastDate: DateTime(now.year + 5),
-      initialDate: _dueAt != null && !_dueAt!.isBefore(now)
-          ? _dueAt!
-          : now,
+      initialDate: _dueAt != null && !_dueAt!.isBefore(now) ? _dueAt! : now,
     );
     if (selectedDate == null || !mounted) {
       return;
@@ -360,9 +439,11 @@ class _TaskEditorDialogState extends State<_TaskEditorDialog> {
     final dueLabel = _dueAt == null
         ? 'Set date and time'
         : '${MaterialLocalizations.of(context).formatMediumDate(_dueAt!)} at '
-            '${MaterialLocalizations.of(context).formatTimeOfDay(TimeOfDay.fromDateTime(_dueAt!))}';
+              '${MaterialLocalizations.of(context).formatTimeOfDay(TimeOfDay.fromDateTime(_dueAt!))}';
     return AlertDialog(
-      title: Text(widget.entry == null ? 'Add Task/Reminder' : 'Edit Task/Reminder'),
+      title: Text(
+        widget.entry == null ? 'Add Task/Reminder' : 'Edit Task/Reminder',
+      ),
       content: SingleChildScrollView(
         child: Column(
           mainAxisSize: MainAxisSize.min,
