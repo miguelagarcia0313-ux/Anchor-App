@@ -37,6 +37,7 @@ dependencies:
   fl_chart: ^1.2.0
   drift: ^2.34.3
   sqlite3_flutter_libs: ^0.6.0+eol
+  shared_preferences: ^2.5.3
   firebase_core: ^4.2.1
   firebase_auth: ^6.1.2
 

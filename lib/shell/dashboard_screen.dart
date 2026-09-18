@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+
 import '../shared/anchor_module.dart';
 import '../modules/finance/finance_module.dart';
 import '../modules/health/health_module.dart';
 import '../modules/tasks/tasks_module.dart';
+import 'module_preferences.dart';
 import 'settings_screen.dart';
 
 /// The dashboard shell — the home screen that hosts whichever modules
@@ -24,15 +26,21 @@ class _DashboardScreenState extends State<DashboardScreen> {
     FinanceModule(),
     HealthModule(),
     TasksModule(),
+
+    ///Add new modules here. The module contract ensures that the dashboard
+    ///screen doesn't need to know anything about the module's implementation.
   ];
 
   Set<String> _enabledModuleIds = {};
   int _selectedTab = 0;
+  bool _isLoadingPreferences = true;
+  final ModulePreferences _modulePreferences = const ModulePreferences();
 
   @override
   void initState() {
     super.initState();
     _enabledModuleIds = _allModules.map((module) => module.id).toSet();
+    _loadModulePreferences();
   }
 
   void _toggleModule(String moduleId) {
@@ -43,6 +51,41 @@ class _DashboardScreenState extends State<DashboardScreen> {
         _enabledModuleIds.add(moduleId);
       }
     });
+    _saveModulePreferences();
+  }
+
+  Future<void> _loadModulePreferences() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      if (mounted) {
+        setState(() => _isLoadingPreferences = false);
+      }
+      return;
+    }
+
+    final allModuleIds = _allModules.map((module) => module.id).toSet();
+    final enabledModuleIds = await _modulePreferences.load(
+      userId: user.uid,
+      defaultModuleIds: allModuleIds,
+    );
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _enabledModuleIds = enabledModuleIds;
+      _isLoadingPreferences = false;
+    });
+  }
+
+  Future<void> _saveModulePreferences() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      return;
+    }
+    await _modulePreferences.save(
+      userId: user.uid,
+      enabledModuleIds: _enabledModuleIds,
+    );
   }
 
   @override
@@ -62,7 +105,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ),
         ],
       ),
-      body: _selectedTab == 0
+      body: _isLoadingPreferences
+          ? const Center(child: CircularProgressIndicator())
+          : _selectedTab == 0
           ? _DashboardModuleList(modules: enabledModules)
           : SettingsScreen(
               modules: _allModules,
@@ -116,9 +161,8 @@ class _DashboardModuleList extends StatelessWidget {
           padding: const EdgeInsets.only(bottom: 8),
           child: InkWell(
             onTap: () {
-              Navigator.of(context).push(
-                MaterialPageRoute(builder: module.buildDetailView),
-              );
+              Navigator.of(context)
+                  .push(MaterialPageRoute(builder: module.buildDetailView));
             },
             borderRadius: BorderRadius.circular(12),
             child: module.buildSummaryCard(context),
