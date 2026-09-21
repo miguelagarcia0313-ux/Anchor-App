@@ -63,7 +63,8 @@ void main() {
     await tester.tap(find.widgetWithText(FilledButton, 'Save'));
     await tester.pump();
 
-    expect(find.text('Add Task/Reminder'), findsOneWidget);
+    expect(find.byType(AlertDialog), findsOneWidget);
+    expect(find.widgetWithText(AlertDialog, 'Add Task/Reminder'), findsOneWidget);
     expect(find.text('No tasks or reminders yet!'), findsOneWidget);
   });
 
