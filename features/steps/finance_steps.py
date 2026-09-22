@@ -22,8 +22,7 @@ def _slug(category: str) -> str:
 # this just documents that assumption for anyone reading the scenario.
 @given("the Anchor app is running")
 def step_app_running(context):
-    # App is already running by the time Appium connects (see
-    # environment.py before_all) -- documented here for readability.
+    # App is already running by the time Appium connects, so this is just a placeholder to document that assumption.
     pass
  
  
