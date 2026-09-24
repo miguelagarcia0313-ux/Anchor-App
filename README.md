@@ -57,7 +57,17 @@ The generated `lib/firebase_options.dart` is project-specific and is intentional
 
 ### Run in a web browser
 
-From the project root, start Flutter's web server:
+If Flutter is installed and your browser is available, use one of these commands from the project root:
+
+```bash
+# Open in Chrome
+flutter run -d chrome
+
+# Open in Edge
+flutter run -d edge
+```
+
+If you want a local web server instead of a browser target:
 
 ```bash
 flutter run -d web-server --web-port 8080 --web-hostname 0.0.0.0
@@ -67,7 +77,13 @@ Keep that terminal running, then open [http://localhost:8080](http://localhost:8
 
 To stop the app, focus the terminal running Flutter and press `q` or `Ctrl+C`. To start it again, run the same `flutter run` command above and reopen [http://localhost:8080](http://localhost:8080).
 
-Run `flutter doctor` first if this is your first time setting up Flutter — it'll flag anything missing.
+If the `flutter` command is not recognized in PowerShell, add Flutter to your PATH first:
+
+```powershell
+$env:Path += ";C:\Software\flutter\bin"
+```
+
+Then run `flutter doctor` to check the environment before starting the app.
 
 ## Project structure
 

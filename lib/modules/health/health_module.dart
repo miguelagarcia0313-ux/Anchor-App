@@ -14,8 +14,8 @@ class HealthModule implements AnchorModule {
     return const Card(
       child: ListTile(
         leading: Icon(Icons.monitor_heart_outlined),
-        title: Text('Health & Fitness'),
-        subtitle: Text('Wellbeing, workouts, and progress in one place'),
+        title: Text('Health'),
+        subtitle: Text('Wellbeing and progress in one place'),
         trailing: Icon(Icons.chevron_right),
       ),
     );
