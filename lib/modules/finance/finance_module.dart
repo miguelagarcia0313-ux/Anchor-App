@@ -8,7 +8,7 @@ import 'manual_entry_form.dart' show manualCategoryDisplayName, ManualEntryForm;
 /// DEMO WIRING: uses mock data + the insights calculations directly.
 /// Once persistence (drift) exists, swap generateMockEntries() for a real
 /// data read -- everything else here stays the same, since it only
-/// depends on getting a List<TrackableEntry> from somewhere.
+/// depends on getting a `List<TrackableEntry>` from somewhere.
 ///
 /// Also note: category budgets ($150 groceries, etc.) aren't part of the
 /// shared TrackableEntry model -- there's no field for "my grocery budget
