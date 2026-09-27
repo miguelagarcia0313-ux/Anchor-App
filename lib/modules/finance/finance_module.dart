@@ -6,7 +6,7 @@ import '../insights/insights_calculations.dart';
 /// DEMO WIRING: uses mock data + the insights calculations directly.
 /// Once persistence (drift) exists, swap generateMockEntries() for a real
 /// data read -- everything else here stays the same, since it only
-/// depends on getting a List<TrackableEntry> from somewhere.
+/// depends on getting a [List<TrackableEntry>] from somewhere.
 ///
 /// Also note: category budgets ($150 groceries, etc.) aren't part of the
 /// shared TrackableEntry model -- there's no field for "my grocery budget
@@ -17,8 +17,8 @@ import '../insights/insights_calculations.dart';
 /// written in features/steps/finance_steps.py:
 ///   finance_summary_card               -- on the dashboard card, so
 ///                                          Appium can tap into Finance
-///   finance_category_row_<category>    -- one per category row
-///   finance_category_amount_<category> -- the "$X / $Y ... ahead of pace"
+///   [finance_category_row_<category>]    -- one per category row
+///   [finance_category_amount_<category>] -- the "$X / $Y ... ahead of pace"
 ///                                          text Appium reads assertions from
 /// If any of these three literal strings change here, the matching
 /// locator in finance_steps.py has to change too, or the step silently
