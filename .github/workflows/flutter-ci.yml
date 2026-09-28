@@ -1,0 +1,35 @@
+name: Flutter CI
+
+# Runs unit/widget tests (flutter test) only -- NOT the BDD/Appium suite.
+# Appium + an Android emulator in CI is a much bigger lift (nested
+# virtualization, a running emulator, a live Appium server) and is
+# deliberately out of scope for this workflow. Revisit as a separate
+# workflow later if the team decides it's worth the setup cost.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Analyze
+        run: flutter analyze
+
+      - name: Run tests
+        run: flutter test
