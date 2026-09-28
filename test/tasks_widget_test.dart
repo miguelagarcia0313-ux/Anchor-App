@@ -52,6 +52,26 @@ void main() {
     expect(find.text('1 open · 0 reminders'), findsOneWidget);
   });
 
+  testWidgets('updates a task date from natural language in its title', (
+    WidgetTester tester,
+  ) async {
+    final module = TasksModule();
+
+    await tester.pumpWidget(_detailApp(module));
+    await tester.tap(find.text('Add Task/Reminder'));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(
+      find.byType(TextField).first,
+      'Call the dentist 3AM Wednesday',
+    );
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Call the dentist 3AM Wednesday'), findsOneWidget);
+    expect(find.textContaining('at 3:00 AM'), findsOneWidget);
+  });
+
   testWidgets('does not save a task with an empty title', (
     WidgetTester tester,
   ) async {

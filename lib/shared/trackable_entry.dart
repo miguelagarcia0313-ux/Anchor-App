@@ -13,6 +13,13 @@ class TrackableEntry {
   final String? note;
   final bool isComplete; // used by tasks; ignored by other modules
 
+  /// Where this entry came from -- e.g. "mock", "manual", "plaid".
+  /// Added for the Finance module's manual-entry feature, which needs to
+  /// tell user-entered entries apart from synced/generated ones. Defaults
+  /// to "mock" so every existing call site (generateMockEntries(), etc.)
+  /// keeps compiling without needing to pass this explicitly.
+  final String source;
+
   const TrackableEntry({
     required this.id,
     required this.moduleType,
@@ -21,6 +28,7 @@ class TrackableEntry {
     required this.timestamp,
     this.note,
     this.isComplete = false,
+    this.source = 'mock',
   });
 
   factory TrackableEntry.fromMap(Map<String, dynamic> map) {
@@ -32,6 +40,7 @@ class TrackableEntry {
       timestamp: DateTime.parse(map['timestamp'] as String),
       note: map['note'] as String?,
       isComplete: (map['isComplete'] as int?) == 1,
+      source: (map['source'] as String?) ?? 'mock',
     );
   }
 
@@ -44,6 +53,7 @@ class TrackableEntry {
       'timestamp': timestamp.toIso8601String(),
       'note': note,
       'isComplete': isComplete ? 1 : 0,
+      'source': source,
     };
   }
 }
