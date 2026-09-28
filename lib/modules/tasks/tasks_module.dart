@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../shared/anchor_module.dart';
+import 'task_date_parser.dart';
 
 class _TaskEntry {
   _TaskEntry({
@@ -378,13 +379,28 @@ class _TaskEditorDialogState extends State<_TaskEditorDialog> {
     _notesController = TextEditingController(text: widget.entry?.notes);
     _isReminder = widget.entry?.isReminder ?? false;
     _dueAt = widget.entry?.dueAt;
+    _titleController.addListener(_updateDueAtFromText);
+    _notesController.addListener(_updateDueAtFromText);
   }
 
   @override
   void dispose() {
+    _titleController.removeListener(_updateDueAtFromText);
+    _notesController.removeListener(_updateDueAtFromText);
     _titleController.dispose();
     _notesController.dispose();
     super.dispose();
+  }
+
+  void _updateDueAtFromText() {
+    final parsedDueAt = parseTaskDateTime(
+      '${_titleController.text} ${_notesController.text}',
+    );
+    if (parsedDueAt != null && parsedDueAt != _dueAt && mounted) {
+      setState(() {
+        _dueAt = parsedDueAt;
+      });
+    }
   }
 
   Future<void> _pickDueAt() async {
@@ -429,7 +445,7 @@ class _TaskEditorDialogState extends State<_TaskEditorDialog> {
         title: title,
         notes: _notesController.text.trim(),
         isReminder: _isReminder,
-        dueAt: _isReminder ? _dueAt : null,
+        dueAt: _dueAt,
       ),
     );
   }
