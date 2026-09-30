@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 
 import '../shared/anchor_module.dart';
 import '../modules/finance/finance_module.dart';
+import '../modules/fitness/fitness.dart';
 import '../modules/health/health_module.dart';
 import '../modules/tasks/tasks_module.dart';
 import 'module_preferences.dart';
@@ -24,6 +25,7 @@ class DashboardScreen extends StatefulWidget {
 class _DashboardScreenState extends State<DashboardScreen> {
   final List<AnchorModule> _allModules = [
     FinanceModule(),
+    FitnessModule(),
     HealthModule(),
     TasksModule(),
 
