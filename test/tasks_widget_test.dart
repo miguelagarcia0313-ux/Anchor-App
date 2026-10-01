@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:anchor_app/modules/tasks/tasks_module.dart';
 
@@ -12,12 +13,17 @@ Widget _detailApp(TasksModule module) {
 }
 
 void main() {
+  setUp(() {
+    SharedPreferences.setMockInitialValues({});
+  });
+
   testWidgets('shows the empty state before any tasks are added', (
     WidgetTester tester,
   ) async {
     final module = TasksModule();
 
     await tester.pumpWidget(_detailApp(module));
+    await tester.pumpAndSettle();
 
     expect(find.text('Tasks & Reminders'), findsOneWidget);
     expect(find.text('No tasks or reminders yet!'), findsOneWidget);
@@ -31,6 +37,7 @@ void main() {
     final module = TasksModule();
 
     await tester.pumpWidget(_detailApp(module));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('Add Task/Reminder'));
     await tester.pumpAndSettle();
 
@@ -58,6 +65,7 @@ void main() {
     final module = TasksModule();
 
     await tester.pumpWidget(_detailApp(module));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('Add Task/Reminder'));
     await tester.pumpAndSettle();
 
@@ -78,6 +86,7 @@ void main() {
     final module = TasksModule();
 
     await tester.pumpWidget(_detailApp(module));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('Add Task/Reminder'));
     await tester.pumpAndSettle();
     await tester.tap(find.widgetWithText(FilledButton, 'Save'));
@@ -94,6 +103,7 @@ void main() {
     final module = TasksModule();
 
     await tester.pumpWidget(_detailApp(module));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('Add Task/Reminder'));
     await tester.pumpAndSettle();
 
@@ -127,6 +137,7 @@ void main() {
     final module = TasksModule();
 
     await tester.pumpWidget(_detailApp(module));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('Add Task/Reminder'));
     await tester.pumpAndSettle();
     await tester.enterText(find.byType(TextField).first, 'Temporary task');
