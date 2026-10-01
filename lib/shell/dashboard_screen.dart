@@ -27,8 +27,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
       FirebaseAuth.instance.currentUser?.uid ?? 'signed-out';
   late final List<AnchorModule> _allModules = [
     FinanceModule(),
-    FitnessModule(userId: _userId),
-    HealthModule(userId: _userId),
+    FitnessModule(),
+    HealthModule(),
     TasksModule(),
 
     ///Add new modules here. The module contract ensures that the dashboard

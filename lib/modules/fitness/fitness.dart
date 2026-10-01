@@ -1,12 +1,10 @@
 import 'dart:convert';
-
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-
 import '../../shared/anchor_module.dart';
 
-class WorkoutEntry {
-  WorkoutEntry({
+class _WorkoutEntry {
+  _WorkoutEntry({
     required this.id,
     required this.name,
     required this.category,
@@ -31,8 +29,8 @@ class WorkoutEntry {
     'minimumWeight': minimumWeight,
   };
 
-  factory WorkoutEntry.fromMap(Map<String, dynamic> map) {
-    return WorkoutEntry(
+  factory _WorkoutEntry.fromMap(Map<String, dynamic> map) {
+    return _WorkoutEntry(
       id: map['id'] as String,
       name: map['name'] as String,
       category: map['category'] as String,
@@ -44,16 +42,9 @@ class WorkoutEntry {
 }
 
 class FitnessModule implements AnchorModule {
-  FitnessModule({required this.userId});
+  static const _storageKey = 'fitness.workouts';
 
-  static const _legacyStorageKey = 'fitness.workouts';
-  static const _legacyMigrationKey = 'fitness.userScopedMigrationComplete';
-
-  final String userId;
-
-  String get _storageKey => 'fitness.$userId.workouts';
-
-  final List<WorkoutEntry> _entries = [];
+  final List<_WorkoutEntry> _entries = [];
   final ValueNotifier<int> _revision = ValueNotifier(0);
   late final Future<void> _ready = _loadEntries();
 
@@ -92,14 +83,14 @@ class FitnessModule implements AnchorModule {
     return _FitnessDetailView(module: this);
   }
 
-  List<WorkoutEntry> get entries => List.unmodifiable(_entries);
+  List<_WorkoutEntry> get entries => List.unmodifiable(_entries);
 
   List<String> get categories =>
       _entries.map((entry) => entry.category).toSet().toList()..sort();
 
-  Future<void> addEntry(WorkoutDraft draft) async {
+  void addEntry(_WorkoutDraft draft) {
     _entries.add(
-      WorkoutEntry(
+      _WorkoutEntry(
         id: DateTime.now().microsecondsSinceEpoch.toString(),
         name: draft.name,
         category: draft.category,
@@ -109,10 +100,10 @@ class FitnessModule implements AnchorModule {
       ),
     );
     _notifyChanged();
-    await _persistEntries();
+    _persistEntries();
   }
 
-  Future<void> updateEntry(WorkoutEntry entry, WorkoutDraft draft) async {
+  void updateEntry(_WorkoutEntry entry, _WorkoutDraft draft) {
     entry
       ..name = draft.name
       ..category = draft.category
@@ -120,31 +111,23 @@ class FitnessModule implements AnchorModule {
       ..reps = draft.reps
       ..minimumWeight = draft.minimumWeight;
     _notifyChanged();
-    await _persistEntries();
+    _persistEntries();
   }
 
-  Future<void> deleteEntry(WorkoutEntry entry) async {
+  void deleteEntry(_WorkoutEntry entry) {
     _entries.remove(entry);
     _notifyChanged();
-    await _persistEntries();
+    _persistEntries();
   }
 
   Future<void> _loadEntries() async {
     final preferences = await SharedPreferences.getInstance();
-    if (!(preferences.getBool(_legacyMigrationKey) ?? false)) {
-      final legacyEntries = preferences.getStringList(_legacyStorageKey);
-      if (!preferences.containsKey(_storageKey) && legacyEntries != null) {
-        await preferences.setStringList(_storageKey, legacyEntries);
-      }
-      await preferences.remove(_legacyStorageKey);
-      await preferences.setBool(_legacyMigrationKey, true);
-    }
     final storedEntries = preferences.getStringList(_storageKey) ?? [];
     _entries
       ..clear()
       ..addAll(
         storedEntries.map(
-          (encodedEntry) => WorkoutEntry.fromMap(
+          (encodedEntry) => _WorkoutEntry.fromMap(
             jsonDecode(encodedEntry) as Map<String, dynamic>,
           ),
         ),
@@ -165,8 +148,8 @@ class FitnessModule implements AnchorModule {
   }
 }
 
-class WorkoutDraft {
-  const WorkoutDraft({
+class _WorkoutDraft {
+  const _WorkoutDraft({
     required this.name,
     required this.category,
     required this.sets,
@@ -200,19 +183,19 @@ class _FitnessDetailViewState extends State<_FitnessDetailView> {
   }
 
   Future<void> _addWorkout() async {
-    final draft = await showDialog<WorkoutDraft>(
+    final draft = await showDialog<_WorkoutDraft>(
       context: context,
       builder: (context) =>
           _WorkoutEditorDialog(categories: widget.module.categories),
     );
     if (draft != null) {
-      await widget.module.addEntry(draft);
+      widget.module.addEntry(draft);
       setState(() {});
     }
   }
 
-  Future<void> _editWorkout(WorkoutEntry entry) async {
-    final draft = await showDialog<WorkoutDraft>(
+  Future<void> _editWorkout(_WorkoutEntry entry) async {
+    final draft = await showDialog<_WorkoutDraft>(
       context: context,
       builder: (context) => _WorkoutEditorDialog(
         entry: entry,
@@ -220,12 +203,12 @@ class _FitnessDetailViewState extends State<_FitnessDetailView> {
       ),
     );
     if (draft != null) {
-      await widget.module.updateEntry(entry, draft);
+      widget.module.updateEntry(entry, draft);
       setState(() {});
     }
   }
 
-  Future<void> _deleteWorkout(WorkoutEntry entry) async {
+  Future<void> _deleteWorkout(_WorkoutEntry entry) async {
     final shouldDelete = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -244,14 +227,14 @@ class _FitnessDetailViewState extends State<_FitnessDetailView> {
       ),
     );
     if (shouldDelete == true) {
-      await widget.module.deleteEntry(entry);
+      widget.module.deleteEntry(entry);
       setState(() {});
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final entriesByCategory = <String, List<WorkoutEntry>>{};
+    final entriesByCategory = <String, List<_WorkoutEntry>>{};
     for (final entry in widget.module.entries) {
       entriesByCategory.putIfAbsent(entry.category, () => []).add(entry);
     }
@@ -291,9 +274,9 @@ class _WorkoutCategorySection extends StatelessWidget {
   });
 
   final String category;
-  final List<WorkoutEntry> entries;
-  final ValueChanged<WorkoutEntry> onEdit;
-  final ValueChanged<WorkoutEntry> onDelete;
+  final List<_WorkoutEntry> entries;
+  final ValueChanged<_WorkoutEntry> onEdit;
+  final ValueChanged<_WorkoutEntry> onDelete;
 
   @override
   Widget build(BuildContext context) {
@@ -326,15 +309,14 @@ class _WorkoutCategorySection extends StatelessWidget {
               ),
             )
             .toList(),
-      ),
-    );
+    )   );
   }
 }
 
 class _WorkoutEditorDialog extends StatefulWidget {
   const _WorkoutEditorDialog({required this.categories, this.entry});
 
-  final WorkoutEntry? entry;
+  final _WorkoutEntry? entry;
   final List<String> categories;
 
   @override
@@ -383,7 +365,7 @@ class _WorkoutEditorDialogState extends State<_WorkoutEditorDialog> {
     if (!_formKey.currentState!.validate()) return;
     Navigator.pop(
       context,
-      WorkoutDraft(
+      _WorkoutDraft(
         name: _nameController.text.trim(),
         category: _selectedCategory == _newCategoryValue
             ? _newCategoryController.text.trim()
@@ -413,7 +395,7 @@ class _WorkoutEditorDialogState extends State<_WorkoutEditorDialog> {
                 validator: _requiredValidator,
               ),
               DropdownButtonFormField<String>(
-                initialValue: _selectedCategory,
+                value: _selectedCategory,
                 decoration: const InputDecoration(labelText: 'Category'),
                 items: [
                   ...widget.categories.map(
@@ -506,3 +488,4 @@ String _formatWeight(double weight) {
       ? weight.toStringAsFixed(0)
       : weight.toString();
 }
+ 

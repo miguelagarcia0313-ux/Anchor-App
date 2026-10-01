@@ -98,15 +98,13 @@ class HealthModule implements AnchorModule {
   );
 
   @override
-  Widget buildDetailView(BuildContext context) =>
-      _HealthDetailView(module: this);
-
-  Future<void> addWeight(double value, String unit) async {
-    _weights.add(
-      WeightEntry(
-        id: DateTime.now().microsecondsSinceEpoch.toString(),
-        kilograms: unit == 'lb' ? value / 2.2046226218 : value,
-        recordedAt: DateTime.now(),
+  Widget buildSummaryCard(BuildContext context) {
+    return const Card(
+      child: ListTile(
+        leading: Icon(Icons.monitor_heart_outlined),
+        title: Text('Health'),
+        subtitle: Text('Wellbeing and progress in one place'),
+        trailing: Icon(Icons.chevron_right),
       ),
     );
     await _saveWeights();
