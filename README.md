@@ -61,10 +61,10 @@ If Flutter is installed and your browser is available, use one of these commands
 
 ```bash
 # Open in Chrome
-flutter run -d chrome
+flutter run -d chrome --web-port 5000
 
 # Open in Edge
-flutter run -d edge
+flutter run -d edge --web-port 5000
 ```
 
 If you want a local web server instead of a browser target:
