@@ -25,11 +25,22 @@ class DashboardScreen extends StatefulWidget {
 class _DashboardScreenState extends State<DashboardScreen> {
   late final String _userId =
       FirebaseAuth.instance.currentUser?.uid ?? 'signed-out';
+  late final TasksModule _tasksModule = TasksModule(userId: _userId);
   late final List<AnchorModule> _allModules = [
     FinanceModule(),
     FitnessModule(userId: _userId),
-    HealthModule(userId: _userId),
-    TasksModule(),
+    HealthModule(
+      userId: _userId,
+      onMedicineSaved: (medicine) => _tasksModule.syncMedicationDoseReminders(
+        medicationId: medicine.id,
+        medicationName: medicine.name,
+        firstDoseHour: medicine.firstDoseHour,
+        firstDoseMinute: medicine.firstDoseMinute,
+        intervalHours: medicine.intervalHours,
+      ),
+      onMedicineDeleted: _tasksModule.removeMedicationDoseReminders,
+    ),
+    _tasksModule,
 
     ///Add new modules here. The module contract ensures that the dashboard
     ///screen doesn't need to know anything about the module's implementation.

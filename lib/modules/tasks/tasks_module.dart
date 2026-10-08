@@ -6,26 +6,38 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../shared/anchor_module.dart';
 import 'task_date_parser.dart';
 
+String _medicationDoseTaskId(String medicationId, DateTime dueAt) =>
+    '$medicationId:${dueAt.toIso8601String()}';
+
 class _TaskEntry {
   _TaskEntry({
+    required this.id,
     required this.title,
     required this.notes,
     required this.isReminder,
+    this.medicationId,
+    this.medicationName,
     this.dueAt,
     this.isComplete = false,
   });
 
+  final String id;
   String title;
   String notes;
   bool isReminder;
+  String? medicationId;
+  String? medicationName;
   DateTime? dueAt;
   bool isComplete;
 
   Map<String, dynamic> toMap() {
     return {
+      'id': id,
       'title': title,
       'notes': notes,
       'isReminder': isReminder,
+      'medicationId': medicationId,
+      'medicationName': medicationName,
       'dueAt': dueAt?.toIso8601String(),
       'isComplete': isComplete,
     };
@@ -33,9 +45,14 @@ class _TaskEntry {
 
   factory _TaskEntry.fromMap(Map<String, dynamic> map) {
     return _TaskEntry(
+      id:
+          map['id'] as String? ??
+          DateTime.now().microsecondsSinceEpoch.toString(),
       title: map['title'] as String? ?? '',
       notes: map['notes'] as String? ?? '',
       isReminder: map['isReminder'] as bool? ?? false,
+      medicationId: map['medicationId'] as String?,
+      medicationName: map['medicationName'] as String?,
       dueAt: map['dueAt'] == null
           ? null
           : DateTime.tryParse(map['dueAt'] as String),
@@ -59,7 +76,14 @@ class _TaskDraft {
 }
 
 class TasksModule implements AnchorModule {
-  static const _storageKey = 'tasks.entries';
+  TasksModule({this.userId = 'local'});
+
+  static const _legacyStorageKey = 'tasks.entries';
+  static const _legacyMigrationKey = 'tasks.userScopedMigrationComplete';
+
+  final String userId;
+
+  String get _storageKey => 'tasks.$userId.entries';
 
   final List<_TaskEntry> _entries = [];
   final ValueNotifier<int> _revision = ValueNotifier(0);
@@ -120,6 +144,7 @@ class TasksModule implements AnchorModule {
   void _addEntry(_TaskDraft draft) {
     _entries.add(
       _TaskEntry(
+        id: DateTime.now().microsecondsSinceEpoch.toString(),
         title: draft.title,
         notes: draft.notes,
         isReminder: draft.isReminder,
@@ -146,8 +171,87 @@ class TasksModule implements AnchorModule {
     _persistEntries();
   }
 
+  Future<void> syncMedicationDoseReminders({
+    required String medicationId,
+    required String medicationName,
+    required int firstDoseHour,
+    required int firstDoseMinute,
+    required int intervalHours,
+  }) async {
+    if (intervalHours < 1 || intervalHours > 24) return;
+    await _ready;
+
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final horizon = now.add(const Duration(days: 1));
+    var doseAt = DateTime(
+      today.year,
+      today.month,
+      today.day,
+      firstDoseHour,
+      firstDoseMinute,
+    );
+    final doses = <DateTime>[];
+    while (doseAt.isBefore(horizon)) {
+      doses.add(doseAt);
+      doseAt = doseAt.add(Duration(hours: intervalHours));
+    }
+
+    final expectedIds = doses
+        .map((dose) => _medicationDoseTaskId(medicationId, dose))
+        .toSet();
+    final countBeforeRemoval = _entries.length;
+    _entries.removeWhere((entry) {
+      return entry.medicationId == medicationId &&
+          !entry.isComplete &&
+          !expectedIds.contains(entry.id);
+    });
+    var changed = _entries.length != countBeforeRemoval;
+
+    for (var index = 0; index < doses.length; index++) {
+      final dose = doses[index];
+      final id = _medicationDoseTaskId(medicationId, dose);
+      if (_entries.any((entry) => entry.id == id)) continue;
+      _entries.add(
+        _TaskEntry(
+          id: id,
+          title: 'Take $medicationName - Dose ${index + 1}',
+          notes: 'Dose ${index + 1} of ${doses.length}',
+          isReminder: true,
+          medicationId: medicationId,
+          medicationName: medicationName,
+          dueAt: dose,
+        ),
+      );
+      changed = true;
+    }
+
+    if (changed) {
+      _notifyChanged();
+      await _persistEntries();
+    }
+  }
+
+  Future<void> removeMedicationDoseReminders(String medicationId) async {
+    await _ready;
+    final countBeforeRemoval = _entries.length;
+    _entries.removeWhere((entry) => entry.medicationId == medicationId);
+    if (_entries.length != countBeforeRemoval) {
+      _notifyChanged();
+      await _persistEntries();
+    }
+  }
+
   Future<void> _loadEntries() async {
     final preferences = await SharedPreferences.getInstance();
+    if (!(preferences.getBool(_legacyMigrationKey) ?? false)) {
+      final legacyEntries = preferences.getStringList(_legacyStorageKey);
+      if (!preferences.containsKey(_storageKey) && legacyEntries != null) {
+        await preferences.setStringList(_storageKey, legacyEntries);
+      }
+      await preferences.remove(_legacyStorageKey);
+      await preferences.setBool(_legacyMigrationKey, true);
+    }
     final storedEntries = preferences.getStringList(_storageKey) ?? [];
     _entries
       ..clear()
@@ -341,6 +445,9 @@ class _EntrySubtitle extends StatelessWidget {
     final details = <String>[];
     if (entry.isReminder) {
       details.add('Reminder');
+    }
+    if (entry.medicationName != null) {
+      details.add('Medication: ${entry.medicationName}');
     }
     if (entry.dueAt != null) {
       final localizations = MaterialLocalizations.of(context);
