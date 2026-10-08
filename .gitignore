@@ -122,3 +122,5 @@ app.*.symbols
 functions/node_modules/
 functions/lib/
 *.local
+# Local Plaid sandbox secrets for the emulator
+functions/.secret.local
