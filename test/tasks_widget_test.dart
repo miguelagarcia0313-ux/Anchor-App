@@ -6,9 +6,7 @@ import 'package:anchor_app/modules/tasks/tasks_module.dart';
 
 Widget _detailApp(TasksModule module) {
   return MaterialApp(
-    home: Builder(
-      builder: (context) => module.buildDetailView(context),
-    ),
+    home: Builder(builder: (context) => module.buildDetailView(context)),
   );
 }
 
@@ -46,13 +44,17 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Call the dentist'), findsOneWidget);
-    expect(find.text('Task'), findsOneWidget);
+    expect(
+      find.text(
+        MaterialLocalizations.of(tester.element(find.text('Call the dentist')))
+            .formatMediumDate(DateTime.now()),
+      ),
+      findsOneWidget,
+    );
 
     await tester.pumpWidget(
       MaterialApp(
-        home: Builder(
-          builder: (context) => module.buildSummaryCard(context),
-        ),
+        home: Builder(builder: (context) => module.buildSummaryCard(context)),
       ),
     );
 
@@ -194,6 +196,29 @@ void main() {
     expect(find.textContaining('at 3:00 AM'), findsOneWidget);
   });
 
+  testWidgets('uses the specific date in a task title', (
+    WidgetTester tester,
+  ) async {
+    final module = TasksModule();
+
+    await tester.pumpWidget(_detailApp(module));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Add Task/Reminder'));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(
+      find.byType(TextField).first,
+      'Submit report 2026-10-08',
+    );
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pumpAndSettle();
+
+    final expectedDate = MaterialLocalizations.of(
+      tester.element(find.text('Submit report 2026-10-08')),
+    ).formatMediumDate(DateTime(2026, 10, 8));
+    expect(find.text(expectedDate), findsOneWidget);
+  });
+
   testWidgets('does not save a task with an empty title', (
     WidgetTester tester,
   ) async {
@@ -207,7 +232,10 @@ void main() {
     await tester.pump();
 
     expect(find.byType(AlertDialog), findsOneWidget);
-    expect(find.widgetWithText(AlertDialog, 'Add Task/Reminder'), findsOneWidget);
+    expect(
+      find.widgetWithText(AlertDialog, 'Add Task/Reminder'),
+      findsOneWidget,
+    );
     expect(find.text('No tasks or reminders yet!'), findsOneWidget);
   });
 
@@ -228,7 +256,8 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Take medicine'), findsOneWidget);
-    expect(find.text('Reminder · After breakfast'), findsOneWidget);
+    expect(find.textContaining('Reminder · '), findsOneWidget);
+    expect(find.textContaining('After breakfast'), findsOneWidget);
 
     await tester.tap(find.byType(Checkbox));
     await tester.pump();
@@ -238,9 +267,7 @@ void main() {
 
     await tester.pumpWidget(
       MaterialApp(
-        home: Builder(
-          builder: (context) => module.buildSummaryCard(context),
-        ),
+        home: Builder(builder: (context) => module.buildSummaryCard(context)),
       ),
     );
 

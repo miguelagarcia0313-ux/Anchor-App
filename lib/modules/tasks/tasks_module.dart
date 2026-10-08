@@ -6,6 +6,13 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../shared/anchor_module.dart';
 import 'task_date_parser.dart';
 
+bool _isDateOnlyDueAt(DateTime date) =>
+    date.hour == 23 &&
+    date.minute == 59 &&
+    date.second == 0 &&
+    date.millisecond == 0 &&
+    date.microsecond == 0;
+
 class _TaskEntry {
   _TaskEntry({
     required this.title,
@@ -393,17 +400,13 @@ class _TasksDetailViewState extends State<_TasksDetailView> {
         case _TaskFilter.all:
           return true;
         case _TaskFilter.today:
-          return !entry.isComplete &&
-              dueAt != null &&
-              _isSameDay(dueAt, today);
+          return !entry.isComplete && dueAt != null && _isSameDay(dueAt, today);
         case _TaskFilter.upcoming:
           return !entry.isComplete &&
               dueAt != null &&
               _startOfDay(dueAt).isAfter(today);
         case _TaskFilter.overdue:
-          return !entry.isComplete &&
-              dueAt != null &&
-              dueAt.isBefore(now);
+          return !entry.isComplete && dueAt != null && dueAt.isBefore(now);
         case _TaskFilter.noDueDate:
           return !entry.isComplete && dueAt == null;
         case _TaskFilter.completed:
@@ -412,7 +415,8 @@ class _TasksDetailViewState extends State<_TasksDetailView> {
     }).toList();
 
     final originalPositions = {
-      for (var index = 0; index < entries.length; index++) entries[index]: index,
+      for (var index = 0; index < entries.length; index++)
+        entries[index]: index,
     };
     matchingEntries.sort((a, b) {
       final comparison = switch (_sort) {
@@ -548,10 +552,14 @@ class _EntrySubtitle extends StatelessWidget {
     if (entry.dueAt != null) {
       final localizations = MaterialLocalizations.of(context);
       final date = localizations.formatMediumDate(entry.dueAt!);
-      final time = localizations.formatTimeOfDay(
-        TimeOfDay.fromDateTime(entry.dueAt!),
-      );
-      details.add('$date at $time');
+      if (_isDateOnlyDueAt(entry.dueAt!)) {
+        details.add(date);
+      } else {
+        final time = localizations.formatTimeOfDay(
+          TimeOfDay.fromDateTime(entry.dueAt!),
+        );
+        details.add('$date at $time');
+      }
     }
     if (entry.notes.isNotEmpty) {
       details.add(entry.notes);
@@ -642,13 +650,14 @@ class _TaskEditorDialogState extends State<_TaskEditorDialog> {
     if (title.isEmpty) {
       return;
     }
+    final now = DateTime.now();
     Navigator.pop(
       context,
       _TaskDraft(
         title: title,
         notes: _notesController.text.trim(),
         isReminder: _isReminder,
-        dueAt: _dueAt,
+        dueAt: _dueAt ?? DateTime(now.year, now.month, now.day, 23, 59),
       ),
     );
   }
@@ -656,7 +665,9 @@ class _TaskEditorDialogState extends State<_TaskEditorDialog> {
   @override
   Widget build(BuildContext context) {
     final dueLabel = _dueAt == null
-        ? 'Set date and time'
+        ? 'Set due date and time'
+        : _isDateOnlyDueAt(_dueAt!)
+        ? MaterialLocalizations.of(context).formatMediumDate(_dueAt!)
         : '${MaterialLocalizations.of(context).formatMediumDate(_dueAt!)} at '
               '${MaterialLocalizations.of(context).formatTimeOfDay(TimeOfDay.fromDateTime(_dueAt!))}';
     return AlertDialog(
@@ -697,15 +708,14 @@ class _TaskEditorDialogState extends State<_TaskEditorDialog> {
                 });
               },
             ),
-            if (_isReminder)
-              Align(
-                alignment: Alignment.centerLeft,
-                child: OutlinedButton.icon(
-                  onPressed: _pickDueAt,
-                  icon: const Icon(Icons.event_outlined),
-                  label: Text(dueLabel),
-                ),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: OutlinedButton.icon(
+                onPressed: _pickDueAt,
+                icon: const Icon(Icons.event_outlined),
+                label: Text(dueLabel),
               ),
+            ),
           ],
         ),
       ),
