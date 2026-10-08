@@ -196,6 +196,22 @@ void main() {
     expect(find.textContaining('at 3:00 AM'), findsOneWidget);
   });
 
+  testWidgets('uses a title time even when no date is included', (
+    WidgetTester tester,
+  ) async {
+    final module = TasksModule();
+
+    await tester.pumpWidget(_detailApp(module));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Add Task/Reminder'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField).first, 'Sprint due at 11PM');
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('at 11:00 PM'), findsOneWidget);
+  });
+
   testWidgets('uses the specific date in a task title', (
     WidgetTester tester,
   ) async {
@@ -208,15 +224,16 @@ void main() {
 
     await tester.enterText(
       find.byType(TextField).first,
-      'Submit report 2026-10-08',
+      'Posert due October 14th at 8 AM',
     );
     await tester.tap(find.widgetWithText(FilledButton, 'Save'));
     await tester.pumpAndSettle();
 
     final expectedDate = MaterialLocalizations.of(
-      tester.element(find.text('Submit report 2026-10-08')),
-    ).formatMediumDate(DateTime(2026, 10, 8));
-    expect(find.text(expectedDate), findsOneWidget);
+      tester.element(find.text('Posert due October 14th at 8 AM')),
+    ).formatMediumDate(DateTime(DateTime.now().year, 10, 14));
+    expect(find.textContaining(expectedDate), findsOneWidget);
+    expect(find.textContaining('at 8:00 AM'), findsOneWidget);
   });
 
   testWidgets('does not save a task with an empty title', (

@@ -6,7 +6,9 @@ DateTime? parseTaskDateTime(String text, {DateTime? now}) {
   ).firstMatch(text);
   final time = _parseTime(timeMatch);
   final date =
-      _parseExplicitDate(text, current) ?? _parseWeekday(text, current, time);
+      _parseExplicitDate(text, current) ??
+      _parseWeekday(text, current, time) ??
+      (time == null ? null : _startOfDay(current));
 
   if (date == null) {
     return null;
@@ -52,7 +54,7 @@ DateTime? _parseExplicitDate(String text, DateTime current) {
   }
 
   final monthMatch = RegExp(
-    r'\b(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{1,2})(?:,?\s+(\d{4}))?\b',
+    r'\b(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{1,2})(?:st|nd|rd|th)?(?:,?\s+(\d{4}))?\b',
     caseSensitive: false,
   ).firstMatch(text);
   if (monthMatch == null) {

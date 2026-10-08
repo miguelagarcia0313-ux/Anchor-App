@@ -21,8 +21,22 @@ void main() {
     expect(result, DateTime(2026, 9, 30, 3));
   });
 
-  test('returns null when no date is present', () {
-    expect(parseTaskDateTime('Call dentist 3AM'), isNull);
+  test('uses today when a time is present without a date', () {
+    expect(
+      parseTaskDateTime(
+        'Sprint due at 11PM',
+        now: DateTime(2026, 10, 8, 15, 43),
+      ),
+      DateTime(2026, 10, 8, 23),
+    );
+    expect(
+      parseTaskDateTime('Sprint due at 11 AM', now: DateTime(2026, 10, 8, 9)),
+      DateTime(2026, 10, 8, 11),
+    );
+  });
+
+  test('returns null when neither a date nor a time is present', () {
+    expect(parseTaskDateTime('Call dentist'), isNull);
   });
 
   test('parses explicit numeric dates without a time', () {
@@ -53,6 +67,16 @@ void main() {
         now: DateTime(2026, 9, 25, 12),
       ),
       DateTime(2026, 10, 8, 3),
+    );
+  });
+
+  test('parses ordinal month-name dates and keeps an explicit time', () {
+    expect(
+      parseTaskDateTime(
+        'Posert due October 14th at 8 AM',
+        now: DateTime(2026, 10, 8, 15, 43),
+      ),
+      DateTime(2026, 10, 14, 8),
     );
   });
 
