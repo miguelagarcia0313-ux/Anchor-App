@@ -6,6 +6,13 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../shared/anchor_module.dart';
 import 'task_date_parser.dart';
 
+bool _isDateOnlyDueAt(DateTime date) =>
+    date.hour == 23 &&
+    date.minute == 59 &&
+    date.second == 0 &&
+    date.millisecond == 0 &&
+    date.microsecond == 0;
+
 class _TaskEntry {
   _TaskEntry({
     required this.title,
@@ -57,6 +64,10 @@ class _TaskDraft {
   final bool isReminder;
   final DateTime? dueAt;
 }
+
+enum _TaskFilter { all, today, upcoming, overdue, noDueDate, completed }
+
+enum _TaskSort { dueSoonest, dueLatest, title }
 
 class TasksModule implements AnchorModule {
   static const _storageKey = 'tasks.entries';
@@ -180,6 +191,9 @@ class _TasksDetailView extends StatefulWidget {
 }
 
 class _TasksDetailViewState extends State<_TasksDetailView> {
+  _TaskFilter _filter = _TaskFilter.all;
+  _TaskSort _sort = _TaskSort.dueSoonest;
+
   Future<void> _createEntry() async {
     final draft = await showDialog<_TaskDraft>(
       context: context,
@@ -237,66 +251,240 @@ class _TasksDetailViewState extends State<_TasksDetailView> {
           );
         }
         final entries = widget.module._entries;
+        if (entries.isEmpty) {
+          return Scaffold(
+            appBar: AppBar(title: const Text('Tasks & Reminders')),
+            body: const _EmptyTasksState(),
+            floatingActionButton: _AddTaskButton(onPressed: _createEntry),
+          );
+        }
+
+        final filteredEntries = _filteredEntries(entries);
         return Scaffold(
           appBar: AppBar(title: const Text('Tasks & Reminders')),
-          body: entries.isEmpty
-              ? const _EmptyTasksState()
-              : ListView.separated(
-                  padding: const EdgeInsets.fromLTRB(12, 12, 12, 96),
-                  itemCount: entries.length,
-                  separatorBuilder: (context, index) =>
-                      const SizedBox(height: 8),
-                  itemBuilder: (context, index) {
-                    final entry = entries[index];
-                    return Card(
-                      child: ListTile(
-                        onTap: () => _editEntry(entry),
-                        leading: Checkbox(
-                          value: entry.isComplete,
-                          onChanged: (value) {
-                            setState(() {
-                              entry.isComplete = value ?? false;
-                            });
-                            widget.module._notifyChanged();
-                            widget.module._persistEntries();
+          body: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+            child: Column(
+              children: [
+                _buildControls(),
+                const SizedBox(height: 12),
+                Expanded(
+                  child: filteredEntries.isEmpty
+                      ? _NoMatchingTasksState(filter: _filter)
+                      : ListView.separated(
+                          padding: const EdgeInsets.only(bottom: 96),
+                          itemCount: filteredEntries.length,
+                          separatorBuilder: (context, index) =>
+                              const SizedBox(height: 8),
+                          itemBuilder: (context, index) {
+                            final entry = filteredEntries[index];
+                            return Card(
+                              child: ListTile(
+                                onTap: () => _editEntry(entry),
+                                leading: Checkbox(
+                                  value: entry.isComplete,
+                                  onChanged: (value) {
+                                    setState(() {
+                                      entry.isComplete = value ?? false;
+                                    });
+                                    widget.module._notifyChanged();
+                                    widget.module._persistEntries();
+                                  },
+                                ),
+                                title: Text(
+                                  entry.title,
+                                  style: TextStyle(
+                                    decoration: entry.isComplete
+                                        ? TextDecoration.lineThrough
+                                        : null,
+                                  ),
+                                ),
+                                subtitle: _EntrySubtitle(entry: entry),
+                                trailing: PopupMenuButton<String>(
+                                  onSelected: (action) {
+                                    if (action == 'edit') {
+                                      _editEntry(entry);
+                                    } else {
+                                      _removeEntry(entry);
+                                    }
+                                  },
+                                  itemBuilder: (context) => const [
+                                    PopupMenuItem(
+                                      value: 'edit',
+                                      child: Text('Edit'),
+                                    ),
+                                    PopupMenuItem(
+                                      value: 'delete',
+                                      child: Text('Delete'),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            );
                           },
                         ),
-                        title: Text(
-                          entry.title,
-                          style: TextStyle(
-                            decoration: entry.isComplete
-                                ? TextDecoration.lineThrough
-                                : null,
-                          ),
-                        ),
-                        subtitle: _EntrySubtitle(entry: entry),
-                        trailing: PopupMenuButton<String>(
-                          onSelected: (action) {
-                            if (action == 'edit') {
-                              _editEntry(entry);
-                            } else {
-                              _removeEntry(entry);
-                            }
-                          },
-                          itemBuilder: (context) => const [
-                            PopupMenuItem(value: 'edit', child: Text('Edit')),
-                            PopupMenuItem(
-                              value: 'delete',
-                              child: Text('Delete'),
-                            ),
-                          ],
-                        ),
-                      ),
-                    );
-                  },
                 ),
-          floatingActionButton: FloatingActionButton.extended(
-            onPressed: _createEntry,
-            icon: const Icon(Icons.add),
-            label: const Text('Add Task/Reminder'),
+              ],
+            ),
           ),
+          floatingActionButton: _AddTaskButton(onPressed: _createEntry),
         );
       },
+    );
+  }
+
+  Widget _buildControls() {
+    return Row(
+      children: [
+        Expanded(
+          child: DropdownButtonFormField<_TaskFilter>(
+            key: const Key('tasks_filter_dropdown'),
+            initialValue: _filter,
+            isExpanded: true,
+            decoration: const InputDecoration(
+              labelText: 'Filter',
+              border: OutlineInputBorder(),
+              contentPadding: EdgeInsets.symmetric(horizontal: 12),
+            ),
+            items: _TaskFilter.values
+                .map(
+                  (filter) => DropdownMenuItem(
+                    value: filter,
+                    child: Text(_filterLabel(filter)),
+                  ),
+                )
+                .toList(),
+            onChanged: (filter) {
+              if (filter != null) {
+                setState(() => _filter = filter);
+              }
+            },
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: DropdownButtonFormField<_TaskSort>(
+            key: const Key('tasks_sort_dropdown'),
+            initialValue: _sort,
+            isExpanded: true,
+            decoration: const InputDecoration(
+              labelText: 'Sort by',
+              border: OutlineInputBorder(),
+              contentPadding: EdgeInsets.symmetric(horizontal: 12),
+            ),
+            items: _TaskSort.values
+                .map(
+                  (sort) => DropdownMenuItem(
+                    value: sort,
+                    child: Text(_sortLabel(sort)),
+                  ),
+                )
+                .toList(),
+            onChanged: (sort) {
+              if (sort != null) {
+                setState(() => _sort = sort);
+              }
+            },
+          ),
+        ),
+      ],
+    );
+  }
+
+  List<_TaskEntry> _filteredEntries(List<_TaskEntry> entries) {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final matchingEntries = entries.where((entry) {
+      final dueAt = entry.dueAt;
+      switch (_filter) {
+        case _TaskFilter.all:
+          return true;
+        case _TaskFilter.today:
+          return !entry.isComplete && dueAt != null && _isSameDay(dueAt, today);
+        case _TaskFilter.upcoming:
+          return !entry.isComplete &&
+              dueAt != null &&
+              _startOfDay(dueAt).isAfter(today);
+        case _TaskFilter.overdue:
+          return !entry.isComplete && dueAt != null && dueAt.isBefore(now);
+        case _TaskFilter.noDueDate:
+          return !entry.isComplete && dueAt == null;
+        case _TaskFilter.completed:
+          return entry.isComplete;
+      }
+    }).toList();
+
+    final originalPositions = {
+      for (var index = 0; index < entries.length; index++)
+        entries[index]: index,
+    };
+    matchingEntries.sort((a, b) {
+      final comparison = switch (_sort) {
+        _TaskSort.dueSoonest => _compareDueDates(a.dueAt, b.dueAt),
+        _TaskSort.dueLatest => _compareDueDates(
+          a.dueAt,
+          b.dueAt,
+          descending: true,
+        ),
+        _TaskSort.title => a.title.toLowerCase().compareTo(
+          b.title.toLowerCase(),
+        ),
+      };
+      return comparison != 0
+          ? comparison
+          : originalPositions[a]!.compareTo(originalPositions[b]!);
+    });
+    return matchingEntries;
+  }
+
+  static int _compareDueDates(
+    DateTime? a,
+    DateTime? b, {
+    bool descending = false,
+  }) {
+    if (a == null) {
+      return b == null ? 0 : 1;
+    }
+    if (b == null) {
+      return -1;
+    }
+    final comparison = a.compareTo(b);
+    return descending ? -comparison : comparison;
+  }
+
+  static DateTime _startOfDay(DateTime date) =>
+      DateTime(date.year, date.month, date.day);
+
+  static bool _isSameDay(DateTime a, DateTime b) =>
+      a.year == b.year && a.month == b.month && a.day == b.day;
+
+  static String _filterLabel(_TaskFilter filter) => switch (filter) {
+    _TaskFilter.all => 'All',
+    _TaskFilter.today => 'Today',
+    _TaskFilter.upcoming => 'Upcoming',
+    _TaskFilter.overdue => 'Overdue',
+    _TaskFilter.noDueDate => 'No due date',
+    _TaskFilter.completed => 'Completed',
+  };
+
+  static String _sortLabel(_TaskSort sort) => switch (sort) {
+    _TaskSort.dueSoonest => 'Soonest due',
+    _TaskSort.dueLatest => 'Latest due',
+    _TaskSort.title => 'Title A–Z',
+  };
+}
+
+class _AddTaskButton extends StatelessWidget {
+  const _AddTaskButton({this.onPressed});
+
+  final VoidCallback? onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return FloatingActionButton.extended(
+      onPressed: onPressed,
+      icon: const Icon(Icons.add),
+      label: const Text('Add Task/Reminder'),
     );
   }
 }
@@ -331,6 +519,25 @@ class _EmptyTasksState extends StatelessWidget {
   }
 }
 
+class _NoMatchingTasksState extends StatelessWidget {
+  const _NoMatchingTasksState({required this.filter});
+
+  final _TaskFilter filter;
+
+  @override
+  Widget build(BuildContext context) {
+    final message = switch (filter) {
+      _TaskFilter.all => 'No tasks or reminders yet!',
+      _TaskFilter.today => 'No tasks due today.',
+      _TaskFilter.upcoming => 'No upcoming tasks.',
+      _TaskFilter.overdue => 'No overdue tasks.',
+      _TaskFilter.noDueDate => 'No tasks without a due date.',
+      _TaskFilter.completed => 'No completed tasks.',
+    };
+    return Center(child: Text(message));
+  }
+}
+
 class _EntrySubtitle extends StatelessWidget {
   const _EntrySubtitle({required this.entry});
 
@@ -345,10 +552,14 @@ class _EntrySubtitle extends StatelessWidget {
     if (entry.dueAt != null) {
       final localizations = MaterialLocalizations.of(context);
       final date = localizations.formatMediumDate(entry.dueAt!);
-      final time = localizations.formatTimeOfDay(
-        TimeOfDay.fromDateTime(entry.dueAt!),
-      );
-      details.add('$date at $time');
+      if (_isDateOnlyDueAt(entry.dueAt!)) {
+        details.add(date);
+      } else {
+        final time = localizations.formatTimeOfDay(
+          TimeOfDay.fromDateTime(entry.dueAt!),
+        );
+        details.add('$date at $time');
+      }
     }
     if (entry.notes.isNotEmpty) {
       details.add(entry.notes);
@@ -439,13 +650,14 @@ class _TaskEditorDialogState extends State<_TaskEditorDialog> {
     if (title.isEmpty) {
       return;
     }
+    final now = DateTime.now();
     Navigator.pop(
       context,
       _TaskDraft(
         title: title,
         notes: _notesController.text.trim(),
         isReminder: _isReminder,
-        dueAt: _dueAt,
+        dueAt: _dueAt ?? DateTime(now.year, now.month, now.day, 23, 59),
       ),
     );
   }
@@ -453,7 +665,9 @@ class _TaskEditorDialogState extends State<_TaskEditorDialog> {
   @override
   Widget build(BuildContext context) {
     final dueLabel = _dueAt == null
-        ? 'Set date and time'
+        ? 'Set due date and time'
+        : _isDateOnlyDueAt(_dueAt!)
+        ? MaterialLocalizations.of(context).formatMediumDate(_dueAt!)
         : '${MaterialLocalizations.of(context).formatMediumDate(_dueAt!)} at '
               '${MaterialLocalizations.of(context).formatTimeOfDay(TimeOfDay.fromDateTime(_dueAt!))}';
     return AlertDialog(
@@ -494,15 +708,14 @@ class _TaskEditorDialogState extends State<_TaskEditorDialog> {
                 });
               },
             ),
-            if (_isReminder)
-              Align(
-                alignment: Alignment.centerLeft,
-                child: OutlinedButton.icon(
-                  onPressed: _pickDueAt,
-                  icon: const Icon(Icons.event_outlined),
-                  label: Text(dueLabel),
-                ),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: OutlinedButton.icon(
+                onPressed: _pickDueAt,
+                icon: const Icon(Icons.event_outlined),
+                label: Text(dueLabel),
               ),
+            ),
           ],
         ),
       ),
