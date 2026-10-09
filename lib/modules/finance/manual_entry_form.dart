@@ -1,15 +1,10 @@
 import 'package:flutter/material.dart';
 import '../../shared/trackable_entry.dart';
 
-/// Categories available for manual entry. As of the follow-up instruction,
-/// these now intentionally MATCH _demoBudgets' keys in finance_module.dart
-/// (groceries, eating_out, subscriptions, entertainment) plus a new
-/// "miscellaneous" category, rather than being a separate scheme. This
-/// means a manual entry now always counts toward its category's budget
-/// ring on the Finance screen -- there's no longer a category with no
-/// budget defined. This is the single source of truth for category
-/// display names; finance_module.dart references categoryDisplayName
-/// instead of keeping its own copy, so the two can't drift apart.
+/// The Finance categories -- the single source of truth for keys and
+/// display names. The same list is enforced in firestore.rules
+/// (isCategory) and produced by functions/src/categorize.ts
+/// (AnchorCategory). Add a category in all three places or not at all.
 const List<String> manualEntryCategories = [
   'groceries',
   'eating_out',
@@ -38,8 +33,8 @@ String manualCategoryDisplayName(String category) {
 /// A simple bottom-sheet form for manually logging a Finance entry.
 /// Calls [onSubmit] with a new TrackableEntry (source: 'manual') and
 /// closes itself. Does not persist anything on its own -- the caller
-/// decides what to do with the entry (see FinanceDetailScreen, which
-/// currently just holds it in session state).
+/// decides what to do with it (FinanceScreen saves it to Firestore
+/// through FinanceRepository.addManualExpense).
 class ManualEntryForm extends StatefulWidget {
   const ManualEntryForm({super.key, required this.onSubmit});
 

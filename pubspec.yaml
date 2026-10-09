@@ -38,8 +38,13 @@ dependencies:
   drift: ^2.34.3
   sqlite3_flutter_libs: ^0.6.0+eol
   shared_preferences: ^2.5.3
-  firebase_core: ^4.2.1
-  firebase_auth: ^6.1.2
+  firebase_core: ^4.15.0
+  firebase_auth: ^6.7.0
+  # Finance: Firestore holds expenses/budgets; Cloud Functions talk to Plaid.
+  cloud_firestore: ^6.10.0
+  cloud_functions: ^6.5.0
+  # Plaid Link native UI (sandbox bank connection).
+  plaid_flutter: ^5.2.1
 
 dev_dependencies:
   flutter_driver:

@@ -2,18 +2,67 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    function isOwner(uid) {
+      return request.auth != null && request.auth.uid == uid;
+    }
+
+    // Must match manualEntryCategories in lib/modules/finance/manual_entry_form.dart
+    // and AnchorCategory in functions/src/categorize.ts.
+    function isCategory(c) {
+      return c in ['groceries', 'eating_out', 'subscriptions',
+                   'entertainment', 'miscellaneous'];
+    }
+
     // Plaid access tokens: Cloud Functions only. The app can never read them.
     match /plaidItems/{uid} {
       allow read, write: if false;
     }
 
-    // Imported expenses: only the owner can read them, and the only thing
-    // they can change is userCategory (their manual re-categorization).
+    // Expenses: Plaid-imported (written by Cloud Functions) and manual
+    // (written by the app). Only the owner can see them.
     match /users/{uid}/expenses/{expenseId} {
-      allow read: if request.auth != null && request.auth.uid == uid;
-      allow update: if request.auth != null && request.auth.uid == uid
+      allow read: if isOwner(uid);
+
+      // The app may only create MANUAL expenses, with a fixed shape.
+      // Plaid expenses come from syncTransactions (Admin SDK skips rules).
+      allow create: if isOwner(uid)
+        && request.resource.data.keys().hasOnly(
+             ['amount', 'date', 'merchantName', 'autoCategory', 'source',
+              'pending', 'createdAt'])
+        && request.resource.data.source == 'manual'
+        && request.resource.data.amount is number
+        && request.resource.data.amount > 0
+        && request.resource.data.amount < 100000
+        && request.resource.data.date is string
+        && request.resource.data.date.size() == 10
+        && isCategory(request.resource.data.autoCategory)
+        && (!('merchantName' in request.resource.data)
+            || request.resource.data.merchantName == null
+            || (request.resource.data.merchantName is string
+                && request.resource.data.merchantName.size() <= 120));
+
+      // Re-categorizing: the only field the app can change on any expense.
+      allow update: if isOwner(uid)
         && request.resource.data.diff(resource.data)
-             .affectedKeys().hasOnly(['userCategory']);
+             .affectedKeys().hasOnly(['userCategory'])
+        && isCategory(request.resource.data.userCategory);
+
+      // Only manual expenses can be deleted from the app; bank data stays
+      // in sync with the bank.
+      allow delete: if isOwner(uid) && resource.data.source == 'manual';
+    }
+
+    // Finance settings: budgets are user-editable; `bank` (connection
+    // status) is written only by Cloud Functions.
+    match /users/{uid}/settings/finance {
+      allow read: if isOwner(uid);
+      allow create: if isOwner(uid)
+        && request.resource.data.keys().hasOnly(['budgets'])
+        && request.resource.data.budgets is map;
+      allow update: if isOwner(uid)
+        && request.resource.data.diff(resource.data)
+             .affectedKeys().hasOnly(['budgets'])
+        && request.resource.data.budgets is map;
     }
   }
 }

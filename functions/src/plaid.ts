@@ -11,7 +11,11 @@
 import {onCall, HttpsError, CallableRequest} from "firebase-functions/https";
 import {defineSecret} from "firebase-functions/params";
 import {getApps, initializeApp} from "firebase-admin/app";
-import {FieldValue, getFirestore} from "firebase-admin/firestore";
+import {
+  DocumentReference,
+  FieldValue,
+  getFirestore,
+} from "firebase-admin/firestore";
 import {
   Configuration,
   CountryCode,
@@ -72,14 +76,44 @@ export const exchangePublicToken = onCall({secrets}, async (request) => {
   const {data} = await plaidClient().itemPublicTokenExchange({
     public_token: publicToken,
   });
-  await getFirestore().doc(`plaidItems/${uid}`).set({
+  const db = getFirestore();
+  await db.doc(`plaidItems/${uid}`).set({
     accessToken: data.access_token,
     itemId: data.item_id,
     cursor: null,
     createdAt: FieldValue.serverTimestamp(),
   });
+  // Public connection status the app CAN read (no tokens in here).
+  // Firestore rules stop the app from writing the `bank` field itself.
+  await settingsRef(uid).set({
+    bank: {
+      connected: true,
+      institutionName: cleanInstitutionName(request.data?.institutionName),
+      linkedAt: FieldValue.serverTimestamp(),
+    },
+  }, {merge: true});
   return {itemId: data.item_id}; // never return the access_token
 });
+
+/**
+ * @param {string} uid the user's Firebase uid
+ * @return {DocumentReference} users/{uid}/settings/finance
+ */
+function settingsRef(uid: string): DocumentReference {
+  return getFirestore().doc(`users/${uid}/settings/finance`);
+}
+
+/**
+ * The institution name comes from the phone, so treat it as untrusted:
+ * keep it a short plain string or drop it.
+ * @param {unknown} value raw value sent by the app
+ * @return {string | null} a safe display name, or null
+ */
+function cleanInstitutionName(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim().slice(0, 80);
+  return trimmed.length > 0 ? trimmed : null;
+}
 
 /** Step 3: pull new/changed transactions and store them as expenses. */
 export const syncTransactions = onCall({secrets}, async (request) => {
@@ -97,11 +131,16 @@ export const syncTransactions = onCall({secrets}, async (request) => {
   const changed: Transaction[] = [];
   const removedIds: string[] = [];
   let hasMore = true;
+  // Plaid prepares a new Item's history in the background. Until that's
+  // done, sync returns nothing and this status is "NOT_READY", so the app
+  // knows to wait a few seconds and try again instead of showing "empty".
+  let updateStatus = "UNKNOWN";
   while (hasMore) {
     const {data} = await client.transactionsSync({
       access_token: accessToken,
       cursor,
     });
+    updateStatus = data.transactions_update_status ?? updateStatus;
     changed.push(...data.added, ...data.modified);
     removedIds.push(...data.removed.map((r) => r.transaction_id));
     cursor = data.next_cursor;
@@ -148,7 +187,10 @@ export const syncTransactions = onCall({secrets}, async (request) => {
     await commitIfFull();
   }
   batch.set(itemRef, {cursor}, {merge: true});
+  batch.set(settingsRef(uid), {
+    bank: {lastSyncedAt: FieldValue.serverTimestamp()},
+  }, {merge: true});
   await batch.commit();
 
-  return {saved, skipped, removed: removedIds.length};
+  return {saved, skipped, removed: removedIds.length, updateStatus};
 });
