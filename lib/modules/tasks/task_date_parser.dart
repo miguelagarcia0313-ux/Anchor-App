@@ -1,9 +1,13 @@
+final _taskTimePattern = RegExp(
+  r'\b(1[0-2]|0?[1-9])(?::([0-5][0-9]))?\s*(am|pm)\b',
+  caseSensitive: false,
+);
+
+bool containsTaskTime(String text) => _taskTimePattern.hasMatch(text);
+
 DateTime? parseTaskDateTime(String text, {DateTime? now}) {
   final current = now ?? DateTime.now();
-  final timeMatch = RegExp(
-    r'\b(1[0-2]|0?[1-9])(?::([0-5][0-9]))?\s*(am|pm)\b',
-    caseSensitive: false,
-  ).firstMatch(text);
+  final timeMatch = _taskTimePattern.firstMatch(text);
   final time = _parseTime(timeMatch);
   final date =
       _parseExplicitDate(text, current) ??

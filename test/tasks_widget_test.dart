@@ -29,7 +29,7 @@ void main() {
     expect(find.text('Add Task/Reminder'), findsOneWidget);
   });
 
-  testWidgets('adds a task and updates its summary card', (
+  testWidgets('adds a task without assigning an implicit due date', (
     WidgetTester tester,
   ) async {
     final module = TasksModule();
@@ -44,13 +44,13 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Call the dentist'), findsOneWidget);
-    expect(
-      find.text(
-        MaterialLocalizations.of(tester.element(find.text('Call the dentist')))
-            .formatMediumDate(DateTime.now()),
-      ),
-      findsOneWidget,
-    );
+    expect(find.text('Task'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('tasks_filter_dropdown')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('No due date').last);
+    await tester.pumpAndSettle();
+    expect(find.text('Call the dentist'), findsOneWidget);
 
     await tester.pumpWidget(
       MaterialApp(
@@ -210,6 +210,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.textContaining('at 11:00 PM'), findsOneWidget);
+    expect(find.textContaining('Reminder · '), findsOneWidget);
   });
 
   testWidgets('uses the specific date in a task title', (

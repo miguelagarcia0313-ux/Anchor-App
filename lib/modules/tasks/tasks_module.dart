@@ -604,12 +604,17 @@ class _TaskEditorDialogState extends State<_TaskEditorDialog> {
   }
 
   void _updateDueAtFromText() {
-    final parsedDueAt = parseTaskDateTime(
-      '${_titleController.text} ${_notesController.text}',
-    );
-    if (parsedDueAt != null && parsedDueAt != _dueAt && mounted) {
+    final text = '${_titleController.text} ${_notesController.text}';
+    final parsedDueAt = parseTaskDateTime(text);
+    final hasTime = containsTaskTime(text);
+    if (parsedDueAt != null &&
+        (parsedDueAt != _dueAt || (hasTime && !_isReminder)) &&
+        mounted) {
       setState(() {
         _dueAt = parsedDueAt;
+        if (hasTime) {
+          _isReminder = true;
+        }
       });
     }
   }
@@ -650,14 +655,13 @@ class _TaskEditorDialogState extends State<_TaskEditorDialog> {
     if (title.isEmpty) {
       return;
     }
-    final now = DateTime.now();
     Navigator.pop(
       context,
       _TaskDraft(
         title: title,
         notes: _notesController.text.trim(),
         isReminder: _isReminder,
-        dueAt: _dueAt ?? DateTime(now.year, now.month, now.day, 23, 59),
+        dueAt: _dueAt,
       ),
     );
   }
