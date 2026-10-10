@@ -34,6 +34,7 @@ try {
   }
 
   console.table(added.map((t) => ({
+    date: t.date,
     merchant: t.merchant_name ?? t.name,
     amount: t.amount,
     plaid: t.personal_finance_category?.detailed,
