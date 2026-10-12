@@ -205,6 +205,7 @@ class InMemoryFinanceRepository implements FinanceRepository {
     BankStatus bank = BankStatus.disconnected,
   })  : _expenses = List.of(expenses),
         _budgets = Map.of(budgets ?? defaultBudgets),
+        // ignore: prefer_initializing_formals -- keeps the public `bank:` parameter name
         _bank = bank;
 
   final List<FinanceExpense> _expenses;
