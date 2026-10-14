@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -52,8 +53,10 @@ class FitnessModule implements AnchorModule {
   final String userId;
 
   String get _storageKey => 'fitness.$userId.workouts';
+  String get _categoryDurationsKey => 'fitness.$userId.categoryDurations';
 
   final List<WorkoutEntry> _entries = [];
+  final Map<String, Duration> _categoryDurations = {};
   final ValueNotifier<int> _revision = ValueNotifier(0);
   late final Future<void> _ready = _loadEntries();
 
@@ -96,6 +99,25 @@ class FitnessModule implements AnchorModule {
 
   List<String> get categories =>
       _entries.map((entry) => entry.category).toSet().toList()..sort();
+
+  Map<String, Duration> get categoryDurations =>
+      Map.unmodifiable(_categoryDurations);
+
+  void updateCategoryDuration(String category, Duration duration) {
+    _categoryDurations[category] = duration;
+  }
+
+  Future<void> persistCategoryDurations() async {
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setString(
+      _categoryDurationsKey,
+      jsonEncode(
+        _categoryDurations.map(
+          (category, duration) => MapEntry(category, duration.inSeconds),
+        ),
+      ),
+    );
+  }
 
   Future<void> addEntry(WorkoutDraft draft) async {
     _entries.add(
@@ -149,6 +171,18 @@ class FitnessModule implements AnchorModule {
           ),
         ),
       );
+    final storedDurations = preferences.getString(_categoryDurationsKey);
+    if (storedDurations != null) {
+      final decoded = jsonDecode(storedDurations) as Map<String, dynamic>;
+      _categoryDurations
+        ..clear()
+        ..addAll(
+          decoded.map(
+            (category, seconds) =>
+                MapEntry(category, Duration(seconds: (seconds as num).toInt())),
+          ),
+        );
+    }
     _notifyChanged();
   }
 
@@ -191,12 +225,28 @@ class _FitnessDetailView extends StatefulWidget {
 }
 
 class _FitnessDetailViewState extends State<_FitnessDetailView> {
+  _GuidedWorkoutSession? _activeSession;
+  final Map<String, Duration> _categoryDurations = {};
+  Timer? _sessionTicker;
+
   @override
   void initState() {
     super.initState();
     widget.module.ready.then((_) {
-      if (mounted) setState(() {});
+      if (mounted) {
+        setState(() {
+          _categoryDurations
+            ..clear()
+            ..addAll(widget.module.categoryDurations);
+        });
+      }
     });
+  }
+
+  @override
+  void dispose() {
+    _sessionTicker?.cancel();
+    super.dispose();
   }
 
   Future<void> _addWorkout() async {
@@ -249,6 +299,134 @@ class _FitnessDetailViewState extends State<_FitnessDetailView> {
     }
   }
 
+  Future<void> _startGuidedWorkout() async {
+    final categories = widget.module.categories;
+    var session = _activeSession;
+    if (session != null) {
+      final choice = await showDialog<_SessionReturnChoice>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Workout session saved'),
+          content: Text(
+            'Continue ${session!.category} where you left off, or reset and '
+            'start a new workout timing?',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            OutlinedButton(
+              onPressed: () =>
+                  Navigator.pop(context, _SessionReturnChoice.reset),
+              child: const Text('Reset'),
+            ),
+            FilledButton(
+              onPressed: () =>
+                  Navigator.pop(context, _SessionReturnChoice.continueSession),
+              child: const Text('Continue'),
+            ),
+          ],
+        ),
+      );
+      if (choice == null || !mounted) return;
+      if (choice == _SessionReturnChoice.reset) session = null;
+    }
+
+    if (session == null) {
+      if (categories.isEmpty) return;
+      final setup = await showDialog<_GuidedWorkoutSetup>(
+        context: context,
+        builder: (context) => _WorkoutSetupDialog(categories: categories),
+      );
+      if (setup == null || !mounted) return;
+
+      final workouts = widget.module.entries
+          .where((entry) => entry.category == setup.category)
+          .toList();
+      if (workouts.isEmpty) return;
+
+      session = _GuidedWorkoutSession(
+        category: setup.category,
+        workouts: workouts,
+        restMinutes: setup.restMinutes,
+      );
+      _sessionTicker?.cancel();
+      _sessionTicker = null;
+      _activeSession = session;
+      _categoryDurations[setup.category] = Duration.zero;
+      widget.module.updateCategoryDuration(setup.category, Duration.zero);
+      await widget.module.persistCategoryDurations();
+      if (!mounted) return;
+      setState(() {});
+    }
+
+    final selectedSession = session;
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => _GuidedWorkoutDialog(
+        session: selectedSession,
+        onSessionChanged: (persist) =>
+            _updateSessionTotal(selectedSession, persist: persist),
+        onFinish: () => _finishSession(selectedSession),
+      ),
+    );
+  }
+
+  void _updateSessionTotal(
+    _GuidedWorkoutSession session, {
+    required bool persist,
+  }) {
+    if (!mounted) return;
+    _categoryDurations[session.category] = session.totalDuration;
+    widget.module.updateCategoryDuration(
+      session.category,
+      session.totalDuration,
+    );
+    if (persist) unawaited(widget.module.persistCategoryDurations());
+    setState(() {});
+
+    if (session.isRunning || session.isResting) {
+      _sessionTicker ??= Timer.periodic(const Duration(seconds: 1), (timer) {
+        if (!mounted) {
+          timer.cancel();
+          return;
+        }
+        if (session.isResting) session.advanceRestIfComplete();
+        _categoryDurations[session.category] = session.totalDuration;
+        widget.module.updateCategoryDuration(
+          session.category,
+          session.totalDuration,
+        );
+        setState(() {});
+        if (!session.isRunning && !session.isResting) {
+          timer.cancel();
+          _sessionTicker = null;
+        }
+      });
+    } else {
+      _sessionTicker?.cancel();
+      _sessionTicker = null;
+    }
+  }
+
+  Future<void> _finishSession(_GuidedWorkoutSession session) async {
+    _sessionTicker?.cancel();
+    _sessionTicker = null;
+    if (!mounted) return;
+    widget.module.updateCategoryDuration(
+      session.category,
+      session.totalDuration,
+    );
+    unawaited(widget.module.persistCategoryDurations());
+    setState(() {
+      _categoryDurations[session.category] = session.totalDuration;
+      if (identical(_activeSession, session)) _activeSession = null;
+    });
+    await widget.module.persistCategoryDurations();
+  }
+
   @override
   Widget build(BuildContext context) {
     final entriesByCategory = <String, List<WorkoutEntry>>{};
@@ -258,26 +436,467 @@ class _FitnessDetailViewState extends State<_FitnessDetailView> {
 
     return Scaffold(
       appBar: AppBar(title: const Text('Fitness')),
-      body: entriesByCategory.isEmpty
-          ? const Center(child: Text('No workouts logged yet.'))
-          : ListView(
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 96),
-              children: entriesByCategory.entries
-                  .map(
-                    (category) => _WorkoutCategorySection(
-                      category: category.key,
-                      entries: category.value,
-                      onEdit: _editWorkout,
-                      onDelete: _deleteWorkout,
-                    ),
-                  )
-                  .toList(),
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 96),
+        children: [
+          Align(
+            alignment: Alignment.centerLeft,
+            child: FilledButton.icon(
+              onPressed: entriesByCategory.isEmpty ? null : _startGuidedWorkout,
+              icon: const Icon(Icons.play_arrow),
+              label: const Text('Play'),
             ),
+          ),
+          const SizedBox(height: 12),
+          if (entriesByCategory.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 24),
+              child: Center(child: Text('No workouts logged yet.')),
+            )
+          else
+            ...entriesByCategory.entries.map(
+              (category) => _WorkoutCategorySection(
+                category: category.key,
+                sessionDuration: _categoryDurations[category.key],
+                entries: category.value,
+                onEdit: _editWorkout,
+                onDelete: _deleteWorkout,
+              ),
+            ),
+        ],
+      ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: _addWorkout,
         icon: const Icon(Icons.add),
         label: const Text('Add workout'),
       ),
+    );
+  }
+}
+
+enum _SessionReturnChoice { continueSession, reset }
+
+class _GuidedWorkoutSetup {
+  const _GuidedWorkoutSetup({
+    required this.category,
+    required this.restMinutes,
+  });
+
+  final String category;
+  final int restMinutes;
+}
+
+class _GuidedWorkoutSession {
+  _GuidedWorkoutSession({
+    required this.category,
+    required this.workouts,
+    required this.restMinutes,
+  });
+
+  final String category;
+  final List<WorkoutEntry> workouts;
+  final int restMinutes;
+  final Stopwatch _stopwatch = Stopwatch();
+  final Map<String, Duration> completedDurations = {};
+  int workoutIndex = 0;
+  bool _startedCurrentWorkout = false;
+  DateTime? restEndsAt;
+
+  bool get isComplete => workoutIndex >= workouts.length;
+  bool get isRunning => _stopwatch.isRunning;
+  bool get isResting => restEndsAt != null;
+  bool get hasStartedCurrentWorkout => _startedCurrentWorkout;
+  Duration get currentElapsed => _stopwatch.elapsed;
+
+  Duration get restRemaining {
+    final end = restEndsAt;
+    if (end == null) return Duration.zero;
+    final remaining = end.difference(DateTime.now());
+    return remaining.isNegative ? Duration.zero : remaining;
+  }
+
+  Duration get totalDuration {
+    final completed = completedDurations.values.fold<Duration>(
+      Duration.zero,
+      (total, duration) => total + duration,
+    );
+    return completed +
+        (_startedCurrentWorkout ? _stopwatch.elapsed : Duration.zero);
+  }
+
+  void startOrResumeWorkout() {
+    if (!_startedCurrentWorkout) {
+      _stopwatch.reset();
+      _startedCurrentWorkout = true;
+    }
+    _stopwatch.start();
+  }
+
+  void pauseWorkout() => _stopwatch.stop();
+
+  void stopWorkout() {
+    _stopwatch.stop();
+    final workout = workouts[workoutIndex];
+    completedDurations[workout.id] = _stopwatch.elapsed;
+    _startedCurrentWorkout = false;
+
+    if (workoutIndex < workouts.length - 1) {
+      restEndsAt = DateTime.now().add(Duration(minutes: restMinutes));
+    } else {
+      workoutIndex++;
+    }
+  }
+
+  bool advanceRestIfComplete() {
+    final end = restEndsAt;
+    if (end == null || DateTime.now().isBefore(end)) return false;
+    restEndsAt = null;
+    workoutIndex++;
+    return true;
+  }
+
+  void skipRest() {
+    if (restEndsAt == null) return;
+    restEndsAt = null;
+    workoutIndex++;
+  }
+}
+
+class _WorkoutSetupDialog extends StatefulWidget {
+  const _WorkoutSetupDialog({required this.categories});
+
+  final List<String> categories;
+
+  @override
+  State<_WorkoutSetupDialog> createState() => _WorkoutSetupDialogState();
+}
+
+class _WorkoutSetupDialogState extends State<_WorkoutSetupDialog> {
+  late String _category = widget.categories.first;
+  int _restMinutes = 1;
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: const Text('Set up guided workout'),
+    content: Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        DropdownButtonFormField<String>(
+          initialValue: _category,
+          decoration: const InputDecoration(labelText: 'Workout list'),
+          items: widget.categories
+              .map(
+                (category) =>
+                    DropdownMenuItem(value: category, child: Text(category)),
+              )
+              .toList(),
+          onChanged: (category) {
+            if (category != null) setState(() => _category = category);
+          },
+        ),
+        const SizedBox(height: 16),
+        DropdownButtonFormField<int>(
+          initialValue: _restMinutes,
+          decoration: const InputDecoration(labelText: 'Rest between workouts'),
+          items: List.generate(
+            5,
+            (index) => DropdownMenuItem(
+              value: index + 1,
+              child: Text('${index + 1} ${index == 0 ? 'minute' : 'minutes'}'),
+            ),
+          ),
+          onChanged: (minutes) {
+            if (minutes != null) setState(() => _restMinutes = minutes);
+          },
+        ),
+      ],
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.pop(context),
+        child: const Text('Cancel'),
+      ),
+      FilledButton(
+        onPressed: () => Navigator.pop(
+          context,
+          _GuidedWorkoutSetup(category: _category, restMinutes: _restMinutes),
+        ),
+        child: const Text('Start'),
+      ),
+    ],
+  );
+}
+
+class _GuidedWorkoutDialog extends StatefulWidget {
+  const _GuidedWorkoutDialog({
+    required this.session,
+    required this.onSessionChanged,
+    required this.onFinish,
+  });
+
+  final _GuidedWorkoutSession session;
+  final ValueChanged<bool> onSessionChanged;
+  final Future<void> Function() onFinish;
+
+  @override
+  State<_GuidedWorkoutDialog> createState() => _GuidedWorkoutDialogState();
+}
+
+class _GuidedWorkoutDialogState extends State<_GuidedWorkoutDialog> {
+  Timer? _ticker;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.session.advanceRestIfComplete();
+    _syncTicker();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) widget.onSessionChanged(true);
+    });
+  }
+
+  @override
+  void dispose() {
+    _ticker?.cancel();
+    super.dispose();
+  }
+
+  bool get _isComplete => widget.session.isComplete;
+
+  void _startWorkout() {
+    widget.session.startOrResumeWorkout();
+    _syncTicker();
+    setState(() {});
+    widget.onSessionChanged(true);
+  }
+
+  void _pauseWorkout() {
+    widget.session.pauseWorkout();
+    _syncTicker();
+    setState(() {});
+    widget.onSessionChanged(true);
+  }
+
+  void _stopWorkout() {
+    widget.session.stopWorkout();
+    _syncTicker();
+    setState(() {});
+    widget.onSessionChanged(true);
+  }
+
+  void _skipRest() {
+    widget.session.skipRest();
+    _syncTicker();
+    setState(() {});
+    widget.onSessionChanged(true);
+  }
+
+  void _syncTicker() {
+    _ticker?.cancel();
+    if (widget.session.isRunning || widget.session.isResting) {
+      _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (!mounted) return;
+        widget.session.advanceRestIfComplete();
+        setState(() {});
+        widget.onSessionChanged(false);
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final width = (MediaQuery.sizeOf(context).width - 48)
+        .clamp(0.0, 440.0)
+        .toDouble();
+    return Dialog(
+      insetPadding: const EdgeInsets.all(24),
+      child: SizedBox(
+        width: width,
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxHeight: MediaQuery.sizeOf(context).height * 0.85,
+          ),
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          widget.session.category,
+                          style: Theme.of(context).textTheme.titleLarge,
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: 'Close workout session',
+                        onPressed: () {
+                          widget.onSessionChanged(true);
+                          Navigator.pop(context);
+                        },
+                        icon: const Icon(Icons.close),
+                      ),
+                    ],
+                  ),
+                  const Divider(),
+                  if (_isComplete)
+                    _buildCompletionSummary(context)
+                  else if (widget.session.isResting)
+                    _buildRestView(context)
+                  else
+                    _buildWorkoutView(context),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildWorkoutView(BuildContext context) {
+    final session = widget.session;
+    final workout = session.workouts[session.workoutIndex];
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(
+          'Workout ${session.workoutIndex + 1} of ${session.workouts.length}',
+        ),
+        const SizedBox(height: 16),
+        Text(workout.name, style: Theme.of(context).textTheme.headlineSmall),
+        const SizedBox(height: 8),
+        Text(
+          '${workout.sets} sets x ${workout.reps} reps  |  '
+          '${_formatWeight(workout.minimumWeight)} min weight',
+        ),
+        const SizedBox(height: 24),
+        Text(
+          _formatDuration(session.currentElapsed),
+          textAlign: TextAlign.center,
+          style: Theme.of(context).textTheme.displaySmall,
+        ),
+        const SizedBox(height: 16),
+        if (session.isRunning)
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: _pauseWorkout,
+                  icon: const Icon(Icons.pause),
+                  label: const Text('Pause'),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: FilledButton.icon(
+                  onPressed: _stopWorkout,
+                  icon: const Icon(Icons.stop),
+                  label: const Text('Stop'),
+                ),
+              ),
+            ],
+          )
+        else if (session.hasStartedCurrentWorkout)
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: _startWorkout,
+                  icon: const Icon(Icons.play_arrow),
+                  label: const Text('Resume'),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: FilledButton.icon(
+                  onPressed: _stopWorkout,
+                  icon: const Icon(Icons.stop),
+                  label: const Text('Stop'),
+                ),
+              ),
+            ],
+          )
+        else
+          FilledButton.icon(
+            onPressed: _startWorkout,
+            icon: const Icon(Icons.play_arrow),
+            label: const Text('Start'),
+          ),
+        const SizedBox(height: 12),
+        ...session.workouts.take(session.workoutIndex).map((completedWorkout) {
+          final duration = session.completedDurations[completedWorkout.id];
+          return ListTile(
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.check_circle_outline),
+            title: Text(completedWorkout.name),
+            trailing: Text(_formatDuration(duration ?? Duration.zero)),
+          );
+        }),
+      ],
+    );
+  }
+
+  Widget _buildRestView(BuildContext context) {
+    final session = widget.session;
+    final nextWorkout = session.workouts[session.workoutIndex + 1];
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text('Rest before workout ${session.workoutIndex + 2}'),
+        const SizedBox(height: 8),
+        Text(
+          _formatDuration(session.restRemaining),
+          textAlign: TextAlign.center,
+          style: Theme.of(context).textTheme.displaySmall,
+        ),
+        const SizedBox(height: 8),
+        Text('Next: ${nextWorkout.name}', textAlign: TextAlign.center),
+        const SizedBox(height: 16),
+        OutlinedButton(onPressed: _skipRest, child: const Text('Skip rest')),
+      ],
+    );
+  }
+
+  Widget _buildCompletionSummary(BuildContext context) {
+    final session = widget.session;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          'Workout list complete',
+          style: Theme.of(context).textTheme.titleLarge,
+          textAlign: TextAlign.center,
+        ),
+        const SizedBox(height: 12),
+        ...session.workouts.map(
+          (workout) => ListTile(
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.check_circle_outline),
+            title: Text(workout.name),
+            trailing: Text(
+              _formatDuration(
+                session.completedDurations[workout.id] ?? Duration.zero,
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 8),
+        FilledButton(
+          onPressed: () async {
+            await widget.onFinish();
+            if (context.mounted) Navigator.pop(context);
+          },
+          child: const Text('Done'),
+        ),
+      ],
     );
   }
 }
@@ -288,12 +907,14 @@ class _WorkoutCategorySection extends StatelessWidget {
     required this.entries,
     required this.onEdit,
     required this.onDelete,
+    this.sessionDuration,
   });
 
   final String category;
   final List<WorkoutEntry> entries;
   final ValueChanged<WorkoutEntry> onEdit;
   final ValueChanged<WorkoutEntry> onDelete;
+  final Duration? sessionDuration;
 
   @override
   Widget build(BuildContext context) {
@@ -301,7 +922,18 @@ class _WorkoutCategorySection extends StatelessWidget {
       margin: const EdgeInsets.only(bottom: 8),
       child: ExpansionTile(
         initiallyExpanded: true,
-        title: Text(category),
+        title: Row(
+          children: [
+            Expanded(child: Text(category)),
+            if (sessionDuration != null) ...[
+              const SizedBox(width: 8),
+              Text(
+                'Total ${_formatDuration(sessionDuration!)}',
+                style: Theme.of(context).textTheme.labelMedium,
+              ),
+            ],
+          ],
+        ),
         children: entries
             .map(
               (entry) => ListTile(
@@ -505,4 +1137,10 @@ String _formatWeight(double weight) {
   return weight == weight.roundToDouble()
       ? weight.toStringAsFixed(0)
       : weight.toString();
+}
+
+String _formatDuration(Duration duration) {
+  final minutes = duration.inMinutes;
+  final seconds = duration.inSeconds.remainder(60).toString().padLeft(2, '0');
+  return '$minutes:$seconds';
 }
