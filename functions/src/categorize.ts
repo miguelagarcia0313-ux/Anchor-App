@@ -71,9 +71,16 @@ export function categorize(tx: CategorizableTx): AnchorCategory | null {
   if (pfc && SKIPPED_PRIMARY.has(pfc.primary)) return null;
 
   const merchant = ` ${normalize(tx.merchant_name ?? tx.name ?? "")} `;
-  if (SUBSCRIPTION_MERCHANTS.some((m) => merchant.includes(` ${m} `))) {
+    if (SUBSCRIPTION_MERCHANTS.some((m) => merchant.includes(` ${m} `))) {
+      return "subscriptions";
+  }
+
+  // Gyms are recurring memberships, even when the merchant isn't on our list.
+  if (pfc?.detailed === "PERSONAL_CARE_GYMS_AND_FITNESS_CENTERS") {
     return "subscriptions";
   }
+
+  if (!pfc) return "miscellaneous";
 
   if (!pfc) return "miscellaneous";
   if (pfc.detailed === "FOOD_AND_DRINK_GROCERIES") return "groceries";
