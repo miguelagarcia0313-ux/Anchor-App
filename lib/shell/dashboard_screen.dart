@@ -25,6 +25,7 @@ class DashboardScreen extends StatefulWidget {
 class _DashboardScreenState extends State<DashboardScreen> {
   late final String _userId =
       FirebaseAuth.instance.currentUser?.uid ?? 'signed-out';
+  late final TasksModule _tasksModule = TasksModule(userId: _userId);
   late final List<AnchorModule> _allModules = [
     FinanceModule(),
     FitnessModule(userId: _userId),

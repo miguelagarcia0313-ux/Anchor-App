@@ -32,23 +32,47 @@ class WeightEntry {
 }
 
 class MedicineEntry {
-  MedicineEntry({required this.id, required this.name, this.isTaken = false});
+  MedicineEntry({
+    required this.id,
+    required this.name,
+    this.firstDoseHour = 8,
+    this.firstDoseMinute = 0,
+    this.intervalHours = 24,
+    this.isTaken = false,
+  });
 
   final String id;
   final String name;
+  final int firstDoseHour;
+  final int firstDoseMinute;
+  final int intervalHours;
   bool isTaken;
 
-  Map<String, dynamic> toMap() => {'id': id, 'name': name, 'isTaken': isTaken};
+  Map<String, dynamic> toMap() => {
+    'id': id,
+    'name': name,
+    'firstDoseHour': firstDoseHour,
+    'firstDoseMinute': firstDoseMinute,
+    'intervalHours': intervalHours,
+    'isTaken': isTaken,
+  };
 
   factory MedicineEntry.fromMap(Map<String, dynamic> map) => MedicineEntry(
     id: map['id'] as String,
     name: map['name'] as String,
+    firstDoseHour: map['firstDoseHour'] as int? ?? 8,
+    firstDoseMinute: map['firstDoseMinute'] as int? ?? 0,
+    intervalHours: map['intervalHours'] as int? ?? 24,
     isTaken: map['isTaken'] as bool? ?? false,
   );
 }
 
 class HealthModule implements AnchorModule {
-  HealthModule({required this.userId});
+  HealthModule({
+    required this.userId,
+    this.onMedicineSaved,
+    this.onMedicineDeleted,
+  });
 
   static const _legacyWeightsKey = 'health.weights';
   static const _legacyWaterGoalKey = 'health.water.goal';
@@ -56,19 +80,27 @@ class HealthModule implements AnchorModule {
   static const _legacyMedicinesKey = 'health.medicines';
   static const _legacyMedicineDateKey = 'health.medicines.date';
   static const _legacyMigrationKey = 'health.userScopedMigrationComplete';
+  static const _weightUnitPreference = 'weightUnit';
+  static const _waterHistoryPreference = 'water.history';
 
   final String userId;
+  final Future<void> Function(MedicineEntry medicine)? onMedicineSaved;
+  final Future<void> Function(String medicationId)? onMedicineDeleted;
 
   String get _weightsKey => 'health.$userId.weights';
   String get _waterGoalKey => 'health.$userId.water.goal';
   String get _waterLogKey => 'health.$userId.water.daily';
+  String get _waterHistoryKey => 'health.$userId.$_waterHistoryPreference';
+  String get _weightUnitKey => 'health.$userId.$_weightUnitPreference';
   String get _medicinesKey => 'health.$userId.medicines';
   String get _medicineDateKey => 'health.$userId.medicines.date';
 
   final List<WeightEntry> _weights = [];
   final List<MedicineEntry> _medicines = [];
+  final Map<String, double> _waterHistory = {};
   double waterGoalOz = 64;
   double waterTodayOz = 0;
+  String weightUnit = 'lb';
   String _dailyDate = _dateKey(DateTime.now());
   final ValueNotifier<int> revision = ValueNotifier(0);
   late final Future<void> ready = _load();
@@ -86,6 +118,8 @@ class HealthModule implements AnchorModule {
   }
 
   List<MedicineEntry> get medicines => List.unmodifiable(_medicines);
+
+  Map<String, double> get waterHistory => Map.unmodifiable(_waterHistory);
 
   @override
   Widget buildSummaryCard(BuildContext context) => const Card(
@@ -136,6 +170,14 @@ class HealthModule implements AnchorModule {
     _notifyChanged();
   }
 
+  Future<void> setWeightUnit(String unit) async {
+    if (unit != 'lb' && unit != 'kg') return;
+    weightUnit = unit;
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setString(_weightUnitKey, unit);
+    _notifyChanged();
+  }
+
   Future<void> addWater(double ounces) async {
     waterTodayOz += ounces;
     await _saveWaterLog();
@@ -150,20 +192,30 @@ class HealthModule implements AnchorModule {
 
   Future<void> _saveWaterLog() async {
     final preferences = await SharedPreferences.getInstance();
+    _waterHistory[_dailyDate] = waterTodayOz;
     await preferences.setString(
       _waterLogKey,
       jsonEncode({'date': _dailyDate, 'ounces': waterTodayOz}),
     );
+    await preferences.setString(_waterHistoryKey, jsonEncode(_waterHistory));
   }
 
-  Future<void> addMedicine(String name) async {
-    _medicines.add(
-      MedicineEntry(
-        id: DateTime.now().microsecondsSinceEpoch.toString(),
-        name: name,
-      ),
+  Future<void> addMedicine({
+    required String name,
+    required int firstDoseHour,
+    required int firstDoseMinute,
+    required int intervalHours,
+  }) async {
+    final medicine = MedicineEntry(
+      id: DateTime.now().microsecondsSinceEpoch.toString(),
+      name: name,
+      firstDoseHour: firstDoseHour,
+      firstDoseMinute: firstDoseMinute,
+      intervalHours: intervalHours,
     );
+    _medicines.add(medicine);
     await _saveMedicines();
+    await onMedicineSaved?.call(medicine);
     _notifyChanged();
   }
 
@@ -176,6 +228,7 @@ class HealthModule implements AnchorModule {
   Future<void> deleteMedicine(MedicineEntry medicine) async {
     _medicines.remove(medicine);
     await _saveMedicines();
+    await onMedicineDeleted?.call(medicine.id);
     _notifyChanged();
   }
 
@@ -185,12 +238,11 @@ class HealthModule implements AnchorModule {
     for (final medicine in _medicines) {
       medicine.isTaken = false;
     }
-    final preferences = await SharedPreferences.getInstance();
-    await preferences.setString(
-      _waterLogKey,
-      jsonEncode({'date': _dailyDate, 'ounces': waterTodayOz}),
-    );
+    await _saveWaterLog();
     await _saveMedicines();
+    for (final medicine in _medicines) {
+      await onMedicineSaved?.call(medicine);
+    }
     _notifyChanged();
   }
 
@@ -198,6 +250,10 @@ class HealthModule implements AnchorModule {
     final preferences = await SharedPreferences.getInstance();
     await _migrateLegacyData(preferences);
     waterGoalOz = preferences.getDouble(_waterGoalKey) ?? 64;
+    final savedWeightUnit = preferences.getString(_weightUnitKey);
+    if (savedWeightUnit == 'lb' || savedWeightUnit == 'kg') {
+      weightUnit = savedWeightUnit!;
+    }
     _weights
       ..clear()
       ..addAll(
@@ -215,14 +271,29 @@ class HealthModule implements AnchorModule {
         ),
       );
 
+    final storedWaterHistory = preferences.getString(_waterHistoryKey);
+    if (storedWaterHistory != null) {
+      final decodedHistory =
+          jsonDecode(storedWaterHistory) as Map<String, dynamic>;
+      _waterHistory
+        ..clear()
+        ..addAll(
+          decodedHistory.map(
+            (date, amount) => MapEntry(date, (amount as num).toDouble()),
+          ),
+        );
+    }
+
     final today = _dateKey(DateTime.now());
     final waterLog = preferences.getString(_waterLogKey);
     if (waterLog != null) {
       final decoded = jsonDecode(waterLog) as Map<String, dynamic>;
-      if (decoded['date'] == today) {
-        waterTodayOz = (decoded['ounces'] as num).toDouble();
+      final loggedDate = decoded['date'] as String?;
+      if (loggedDate != null && DateTime.tryParse(loggedDate) != null) {
+        _waterHistory[loggedDate] = (decoded['ounces'] as num).toDouble();
       }
     }
+    waterTodayOz = _waterHistory[today] ?? 0;
     if (preferences.getString(_medicineDateKey) != today) {
       _dailyDate = today;
       for (final medicine in _medicines) {
@@ -231,6 +302,9 @@ class HealthModule implements AnchorModule {
       await _saveMedicines();
     } else {
       _dailyDate = today;
+    }
+    for (final medicine in _medicines) {
+      await onMedicineSaved?.call(medicine);
     }
     _notifyChanged();
   }
@@ -330,7 +404,8 @@ class _HealthDetailViewState extends State<_HealthDetailView> {
   Future<void> _addWeight() async {
     final result = await showDialog<_WeightDraft>(
       context: context,
-      builder: (context) => const _WeightEditorDialog(),
+      builder: (context) =>
+          _WeightEditorDialog(initialUnit: widget.module.weightUnit),
     );
     if (result != null) {
       await widget.module.addWeight(result.value, result.unit);
@@ -341,7 +416,10 @@ class _HealthDetailViewState extends State<_HealthDetailView> {
   Future<void> _editWeight(WeightEntry entry) async {
     final result = await showDialog<_WeightDraft>(
       context: context,
-      builder: (context) => _WeightEditorDialog(entry: entry),
+      builder: (context) => _WeightEditorDialog(
+        entry: entry,
+        initialUnit: widget.module.weightUnit,
+      ),
     );
     if (result != null) {
       await widget.module.updateWeight(entry, result.value, result.unit);
@@ -365,7 +443,10 @@ class _HealthDetailViewState extends State<_HealthDetailView> {
                     final entry = widget.module.weights[index];
                     return ListTile(
                       contentPadding: EdgeInsets.zero,
-                      title: Text('${_weightValue(entry.kilograms, 'lb')} lb'),
+                      title: Text(
+                        '${_formatNumber(_weightValue(entry.kilograms, widget.module.weightUnit))} '
+                        '${widget.module.weightUnit}',
+                      ),
                       subtitle: Text(_formatDate(entry.recordedAt)),
                       trailing: Wrap(
                         children: [
@@ -440,13 +521,54 @@ class _HealthDetailViewState extends State<_HealthDetailView> {
     }
   }
 
+  Future<void> _showWaterHistory() async {
+    final history = Map<String, double>.from(widget.module.waterHistory);
+    history.putIfAbsent(_dateKey(DateTime.now()), () => 0);
+    final days = history.entries.toList()
+      ..sort((first, second) => second.key.compareTo(first.key));
+
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Water history'),
+        content: SizedBox(
+          width: 360,
+          height: 360,
+          child: ListView.separated(
+            itemCount: days.length,
+            separatorBuilder: (context, index) => const Divider(height: 1),
+            itemBuilder: (context, index) {
+              final day = days[index];
+              return ListTile(
+                contentPadding: EdgeInsets.zero,
+                title: Text(_formatDate(DateTime.parse(day.key))),
+                trailing: Text('${_formatNumber(day.value)} fl oz'),
+              );
+            },
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Done'),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _addMedicine() async {
-    final name = await showDialog<String>(
+    final draft = await showDialog<_MedicineDraft>(
       context: context,
       builder: (context) => const _MedicineEditorDialog(),
     );
-    if (name != null && name.isNotEmpty) {
-      await widget.module.addMedicine(name);
+    if (draft != null) {
+      await widget.module.addMedicine(
+        name: draft.name,
+        firstDoseHour: draft.firstDoseTime.hour,
+        firstDoseMinute: draft.firstDoseTime.minute,
+        intervalHours: draft.intervalHours,
+      );
       setState(() {});
     }
   }
@@ -499,7 +621,7 @@ class _HealthDetailViewState extends State<_HealthDetailView> {
     final oldest = entries.isEmpty ? null : entries.first;
     final latest = entries.isEmpty ? null : entries.last;
     final chartWeights = entries
-        .map((entry) => _weightValue(entry.kilograms, 'lb'))
+        .map((entry) => _weightValue(entry.kilograms, widget.module.weightUnit))
         .toList();
     final lowestWeight = chartWeights.isEmpty
         ? 0.0
@@ -542,6 +664,22 @@ class _HealthDetailViewState extends State<_HealthDetailView> {
                 ),
               ],
             ),
+            Align(
+              alignment: Alignment.centerRight,
+              child: Tooltip(
+                message: 'Weight unit',
+                child: DropdownButton<String>(
+                  value: widget.module.weightUnit,
+                  items: const [
+                    DropdownMenuItem(value: 'lb', child: Text('lb')),
+                    DropdownMenuItem(value: 'kg', child: Text('kg')),
+                  ],
+                  onChanged: (unit) {
+                    if (unit != null) widget.module.setWeightUnit(unit);
+                  },
+                ),
+              ),
+            ),
             if (entries.isEmpty)
               const Padding(
                 padding: EdgeInsets.symmetric(vertical: 24),
@@ -551,11 +689,19 @@ class _HealthDetailViewState extends State<_HealthDetailView> {
               Row(
                 children: [
                   Expanded(
-                    child: _EndpointWeight(label: 'Oldest', entry: oldest!),
+                    child: _EndpointWeight(
+                      label: 'Oldest',
+                      entry: oldest!,
+                      unit: widget.module.weightUnit,
+                    ),
                   ),
                   const SizedBox(width: 16),
                   Expanded(
-                    child: _EndpointWeight(label: 'Latest', entry: latest!),
+                    child: _EndpointWeight(
+                      label: 'Latest',
+                      entry: latest!,
+                      unit: widget.module.weightUnit,
+                    ),
                   ),
                 ],
               ),
@@ -599,7 +745,7 @@ class _HealthDetailViewState extends State<_HealthDetailView> {
                         getTooltipItems: (spots) => spots
                             .map(
                               (spot) => LineTooltipItem(
-                                '${_formatNumber(spot.y)} lb',
+                                '${_formatNumber(spot.y)} ${widget.module.weightUnit}',
                                 TextStyle(
                                   color: Theme.of(context)
                                       .colorScheme
@@ -619,7 +765,10 @@ class _HealthDetailViewState extends State<_HealthDetailView> {
                             .map(
                               (entry) => FlSpot(
                                 entry.key.toDouble(),
-                                _weightValue(entry.value.kilograms, 'lb'),
+                                _weightValue(
+                                  entry.value.kilograms,
+                                  widget.module.weightUnit,
+                                ),
                               ),
                             )
                             .toList(),
@@ -658,6 +807,11 @@ class _HealthDetailViewState extends State<_HealthDetailView> {
                     'Water',
                     style: Theme.of(context).textTheme.titleLarge,
                   ),
+                ),
+                IconButton(
+                  onPressed: _showWaterHistory,
+                  tooltip: 'Water history',
+                  icon: const Icon(Icons.history),
                 ),
                 IconButton(
                   onPressed: _editWaterGoal,
@@ -745,10 +899,15 @@ class _HealthDetailViewState extends State<_HealthDetailView> {
 }
 
 class _EndpointWeight extends StatelessWidget {
-  const _EndpointWeight({required this.label, required this.entry});
+  const _EndpointWeight({
+    required this.label,
+    required this.entry,
+    required this.unit,
+  });
 
   final String label;
   final WeightEntry entry;
+  final String unit;
 
   @override
   Widget build(BuildContext context) => Column(
@@ -756,7 +915,7 @@ class _EndpointWeight extends StatelessWidget {
     children: [
       Text(label, style: Theme.of(context).textTheme.labelMedium),
       Text(
-        '${_formatNumber(_weightValue(entry.kilograms, 'lb'))} lb',
+        '${_formatNumber(_weightValue(entry.kilograms, unit))} $unit',
         style: Theme.of(context).textTheme.titleMedium,
       ),
       Text(_formatDate(entry.recordedAt)),
@@ -772,9 +931,10 @@ class _WeightDraft {
 }
 
 class _WeightEditorDialog extends StatefulWidget {
-  const _WeightEditorDialog({this.entry});
+  const _WeightEditorDialog({required this.initialUnit, this.entry});
 
   final WeightEntry? entry;
+  final String initialUnit;
 
   @override
   State<_WeightEditorDialog> createState() => _WeightEditorDialogState();
@@ -787,7 +947,7 @@ class _WeightEditorDialogState extends State<_WeightEditorDialog> {
   @override
   void initState() {
     super.initState();
-    _unit = 'lb';
+    _unit = widget.initialUnit;
     final initialWeight = widget.entry == null
         ? null
         : _weightValue(widget.entry!.kilograms, _unit);
@@ -910,6 +1070,18 @@ class _NumberEntryDialogState extends State<_NumberEntryDialog> {
   );
 }
 
+class _MedicineDraft {
+  const _MedicineDraft({
+    required this.name,
+    required this.firstDoseTime,
+    required this.intervalHours,
+  });
+
+  final String name;
+  final TimeOfDay firstDoseTime;
+  final int intervalHours;
+}
+
 class _MedicineEditorDialog extends StatefulWidget {
   const _MedicineEditorDialog();
 
@@ -919,6 +1091,32 @@ class _MedicineEditorDialog extends StatefulWidget {
 
 class _MedicineEditorDialogState extends State<_MedicineEditorDialog> {
   final TextEditingController _controller = TextEditingController();
+  TimeOfDay _firstDoseTime = const TimeOfDay(hour: 8, minute: 0);
+  int _intervalHours = 24;
+
+  Future<void> _chooseFirstDoseTime() async {
+    final selected = await showTimePicker(
+      context: context,
+      initialTime: _firstDoseTime,
+      helpText: 'First dose time',
+    );
+    if (selected != null && mounted) {
+      setState(() => _firstDoseTime = selected);
+    }
+  }
+
+  void _save() {
+    final name = _controller.text.trim();
+    if (name.isEmpty) return;
+    Navigator.pop(
+      context,
+      _MedicineDraft(
+        name: name,
+        firstDoseTime: _firstDoseTime,
+        intervalHours: _intervalHours,
+      ),
+    );
+  }
 
   @override
   void dispose() {
@@ -928,23 +1126,60 @@ class _MedicineEditorDialogState extends State<_MedicineEditorDialog> {
 
   @override
   Widget build(BuildContext context) => AlertDialog(
-    title: const Text('Add medicine or vitamin'),
-    content: TextField(
-      controller: _controller,
-      autofocus: true,
-      textCapitalization: TextCapitalization.sentences,
-      decoration: const InputDecoration(labelText: 'Name'),
-      onSubmitted: (value) => Navigator.pop(context, value.trim()),
+    title: const Text('Add medication or supplement'),
+    content: SingleChildScrollView(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          TextField(
+            controller: _controller,
+            autofocus: true,
+            textCapitalization: TextCapitalization.sentences,
+            decoration: const InputDecoration(labelText: 'Name'),
+          ),
+          const SizedBox(height: 12),
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('First dose'),
+            subtitle: Text(
+              MaterialLocalizations.of(context).formatTimeOfDay(_firstDoseTime),
+            ),
+            trailing: IconButton(
+              onPressed: _chooseFirstDoseTime,
+              tooltip: 'Choose first dose time',
+              icon: const Icon(Icons.schedule),
+            ),
+          ),
+          DropdownButtonFormField<int>(
+            initialValue: _intervalHours,
+            decoration: const InputDecoration(labelText: 'Dose frequency'),
+            items: List.generate(
+              24,
+              (index) => DropdownMenuItem(
+                value: index + 1,
+                child: Text('Every ${index + 1} hours'),
+              ),
+            ),
+            onChanged: (hours) {
+              if (hours != null) setState(() => _intervalHours = hours);
+            },
+          ),
+          const Align(
+            alignment: Alignment.centerLeft,
+            child: Padding(
+              padding: EdgeInsets.only(top: 4),
+              child: Text('24 hours means once daily.'),
+            ),
+          ),
+        ],
+      ),
     ),
     actions: [
       TextButton(
         onPressed: () => Navigator.pop(context),
         child: const Text('Cancel'),
       ),
-      FilledButton(
-        onPressed: () => Navigator.pop(context, _controller.text.trim()),
-        child: const Text('Add'),
-      ),
+      FilledButton(onPressed: _save, child: const Text('Add')),
     ],
   );
 }

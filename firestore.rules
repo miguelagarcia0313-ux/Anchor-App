@@ -1,0 +1,19 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Plaid access tokens: Cloud Functions only. The app can never read them.
+    match /plaidItems/{uid} {
+      allow read, write: if false;
+    }
+
+    // Imported expenses: only the owner can read them, and the only thing
+    // they can change is userCategory (their manual re-categorization).
+    match /users/{uid}/expenses/{expenseId} {
+      allow read: if request.auth != null && request.auth.uid == uid;
+      allow update: if request.auth != null && request.auth.uid == uid
+        && request.resource.data.diff(resource.data)
+             .affectedKeys().hasOnly(['userCategory']);
+    }
+  }
+}
