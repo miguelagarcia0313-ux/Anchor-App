@@ -345,6 +345,22 @@ class _TasksDetailViewState extends State<_TasksDetailView> {
   _TaskFilter _filter = _TaskFilter.all;
   _TaskSort _sort = _TaskSort.dueSoonest;
 
+  @override
+  void initState() {
+    super.initState();
+    widget.module._revision.addListener(_handleModuleChanged);
+  }
+
+  @override
+  void dispose() {
+    widget.module._revision.removeListener(_handleModuleChanged);
+    super.dispose();
+  }
+
+  void _handleModuleChanged() {
+    if (mounted) setState(() {});
+  }
+
   Future<void> _createEntry() async {
     final draft = await showDialog<_TaskDraft>(
       context: context,

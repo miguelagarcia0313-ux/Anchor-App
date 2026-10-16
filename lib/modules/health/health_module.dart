@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/cupertino.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
@@ -9,6 +10,7 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../shared/anchor_module.dart';
+import '../../shared/module_bottom_sheet.dart';
 import '../../shared/user_cloud_sync.dart';
 
 class WeightEntry {
@@ -152,9 +154,9 @@ class HealthModule implements AnchorModule {
       recordedAt: DateTime.now(),
     );
     _weights.add(entry);
+    _notifyChanged();
     await _saveWeights();
     await _cloud?.records('health', 'weights').doc(entry.id).set(entry.toMap());
-    _notifyChanged();
   }
 
   Future<void> updateWeight(
@@ -163,47 +165,47 @@ class HealthModule implements AnchorModule {
     String unit,
   ) async {
     entry.kilograms = unit == 'lb' ? value / 2.2046226218 : value;
+    _notifyChanged();
     await _saveWeights();
     await _cloud?.records('health', 'weights').doc(entry.id).set(entry.toMap());
-    _notifyChanged();
   }
 
   Future<void> deleteWeight(WeightEntry entry) async {
     _weights.remove(entry);
+    _notifyChanged();
     await _saveWeights();
     await _cloud?.records('health', 'weights').doc(entry.id).delete();
-    _notifyChanged();
   }
 
   Future<void> setWaterGoal(double ounces) async {
     waterGoalOz = ounces;
+    _notifyChanged();
     final preferences = await SharedPreferences.getInstance();
     await preferences.setDouble(_waterGoalKey, ounces);
     await _cloud?.setModuleSettings('health', 'profile', {
       'waterGoalOz': ounces,
     });
-    _notifyChanged();
   }
 
   Future<void> setWeightUnit(String unit) async {
     if (unit != 'lb' && unit != 'kg') return;
     weightUnit = unit;
+    _notifyChanged();
     final preferences = await SharedPreferences.getInstance();
     await preferences.setString(_weightUnitKey, unit);
     await _cloud?.setModuleSettings('health', 'profile', {'weightUnit': unit});
-    _notifyChanged();
   }
 
   Future<void> addWater(double ounces) async {
     waterTodayOz += ounces;
-    await _saveWaterLog();
     _notifyChanged();
+    await _saveWaterLog();
   }
 
   Future<void> removeWater(double ounces) async {
     waterTodayOz = (waterTodayOz - ounces).clamp(0, double.infinity);
-    await _saveWaterLog();
     _notifyChanged();
+    await _saveWaterLog();
   }
 
   Future<void> _saveWaterLog() async {
@@ -233,31 +235,31 @@ class HealthModule implements AnchorModule {
       intervalHours: intervalHours,
     );
     _medicines.add(medicine);
+    _notifyChanged();
     await _saveMedicines();
     await onMedicineSaved?.call(medicine);
     await _cloud
         ?.records('health', 'medicines')
         .doc(medicine.id)
         .set(medicine.toMap());
-    _notifyChanged();
   }
 
   Future<void> toggleMedicine(MedicineEntry medicine, bool isTaken) async {
     medicine.isTaken = isTaken;
+    _notifyChanged();
     await _saveMedicines();
     await _cloud
         ?.records('health', 'medicines')
         .doc(medicine.id)
         .set(medicine.toMap());
-    _notifyChanged();
   }
 
   Future<void> deleteMedicine(MedicineEntry medicine) async {
     _medicines.remove(medicine);
+    _notifyChanged();
     await _saveMedicines();
     await onMedicineDeleted?.call(medicine.id);
     await _cloud?.records('health', 'medicines').doc(medicine.id).delete();
-    _notifyChanged();
   }
 
   Future<void> resetDailyData() async {
@@ -266,13 +268,13 @@ class HealthModule implements AnchorModule {
     for (final medicine in _medicines) {
       medicine.isTaken = false;
     }
+    _notifyChanged();
     await _saveWaterLog();
     await _saveMedicines();
     await _persistMedicinesToCloud();
     for (final medicine in _medicines) {
       await onMedicineSaved?.call(medicine);
     }
-    _notifyChanged();
   }
 
   Future<void> _load() async {
@@ -640,8 +642,10 @@ class _HealthDetailViewState extends State<_HealthDetailView> {
   }
 
   Future<void> _addWeight() async {
-    final result = await showDialog<_WeightDraft>(
+    final result = await showModalBottomSheet<_WeightDraft>(
       context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
       builder: (context) =>
           _WeightEditorDialog(initialUnit: widget.module.weightUnit),
     );
@@ -652,8 +656,10 @@ class _HealthDetailViewState extends State<_HealthDetailView> {
   }
 
   Future<void> _editWeight(WeightEntry entry) async {
-    final result = await showDialog<_WeightDraft>(
+    final result = await showModalBottomSheet<_WeightDraft>(
       context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
       builder: (context) => _WeightEditorDialog(
         entry: entry,
         initialUnit: widget.module.weightUnit,
@@ -666,11 +672,20 @@ class _HealthDetailViewState extends State<_HealthDetailView> {
   }
 
   Future<void> _showWeightHistory() async {
-    await showDialog<void>(
+    await showModalBottomSheet<void>(
       context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Weight history'),
-        content: SizedBox(
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (dialogContext) => ModuleBottomSheet(
+        title: 'Weight history',
+        actions: Align(
+          alignment: Alignment.centerRight,
+          child: TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Done'),
+          ),
+        ),
+        child: SizedBox(
           width: 420,
           child: widget.module.weights.isEmpty
               ? const Text('No weights recorded.')
@@ -713,12 +728,6 @@ class _HealthDetailViewState extends State<_HealthDetailView> {
                   },
                 ),
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
-            child: const Text('Done'),
-          ),
-        ],
       ),
     );
   }
@@ -765,11 +774,20 @@ class _HealthDetailViewState extends State<_HealthDetailView> {
     final days = history.entries.toList()
       ..sort((first, second) => second.key.compareTo(first.key));
 
-    await showDialog<void>(
+    await showModalBottomSheet<void>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Water history'),
-        content: SizedBox(
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (context) => ModuleBottomSheet(
+        title: 'Water history',
+        actions: Align(
+          alignment: Alignment.centerRight,
+          child: TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Done'),
+          ),
+        ),
+        child: SizedBox(
           width: 360,
           height: 360,
           child: ListView.separated(
@@ -785,19 +803,15 @@ class _HealthDetailViewState extends State<_HealthDetailView> {
             },
           ),
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Done'),
-          ),
-        ],
       ),
     );
   }
 
   Future<void> _addMedicine() async {
-    final draft = await showDialog<_MedicineDraft>(
+    final draft = await showModalBottomSheet<_MedicineDraft>(
       context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
       builder: (context) => const _MedicineEditorDialog(),
     );
     if (draft != null) {
@@ -816,8 +830,10 @@ class _HealthDetailViewState extends State<_HealthDetailView> {
     required String label,
     required String initialValue,
   }) {
-    return showDialog<double>(
+    return showModalBottomSheet<double>(
       context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
       builder: (context) => _NumberEntryDialog(
         title: title,
         label: label,
@@ -1212,9 +1228,20 @@ class _WeightEditorDialogState extends State<_WeightEditorDialog> {
   }
 
   @override
-  Widget build(BuildContext context) => AlertDialog(
-    title: Text(widget.entry == null ? 'Add weight' : 'Edit weight'),
-    content: Column(
+  Widget build(BuildContext context) => ModuleBottomSheet(
+    title: widget.entry == null ? 'Add weight' : 'Edit weight',
+    actions: Row(
+      mainAxisAlignment: MainAxisAlignment.end,
+      children: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        const SizedBox(width: 8),
+        FilledButton(onPressed: _save, child: const Text('Save')),
+      ],
+    ),
+    child: Column(
       mainAxisSize: MainAxisSize.min,
       children: [
         TextField(
@@ -1250,13 +1277,6 @@ class _WeightEditorDialogState extends State<_WeightEditorDialog> {
         ),
       ],
     ),
-    actions: [
-      TextButton(
-        onPressed: () => Navigator.pop(context),
-        child: const Text('Cancel'),
-      ),
-      FilledButton(onPressed: _save, child: const Text('Save')),
-    ],
   );
 }
 
@@ -1291,25 +1311,29 @@ class _NumberEntryDialogState extends State<_NumberEntryDialog> {
   }
 
   @override
-  Widget build(BuildContext context) => AlertDialog(
-    title: Text(widget.title),
-    content: TextField(
+  Widget build(BuildContext context) => ModuleBottomSheet(
+    title: widget.title,
+    actions: Row(
+      mainAxisAlignment: MainAxisAlignment.end,
+      children: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        const SizedBox(width: 8),
+        FilledButton(
+          onPressed: () =>
+              Navigator.pop(context, double.tryParse(_controller.text.trim())),
+          child: const Text('Save'),
+        ),
+      ],
+    ),
+    child: TextField(
       controller: _controller,
       autofocus: true,
       keyboardType: const TextInputType.numberWithOptions(decimal: true),
       decoration: InputDecoration(labelText: widget.label),
     ),
-    actions: [
-      TextButton(
-        onPressed: () => Navigator.pop(context),
-        child: const Text('Cancel'),
-      ),
-      FilledButton(
-        onPressed: () =>
-            Navigator.pop(context, double.tryParse(_controller.text.trim())),
-        child: const Text('Save'),
-      ),
-    ],
   );
 }
 
@@ -1338,10 +1362,37 @@ class _MedicineEditorDialogState extends State<_MedicineEditorDialog> {
   int _intervalHours = 24;
 
   Future<void> _chooseFirstDoseTime() async {
-    final selected = await showTimePicker(
+    var selectedTime = _firstDoseTime;
+    final selected = await showModalBottomSheet<TimeOfDay>(
       context: context,
-      initialTime: _firstDoseTime,
-      helpText: 'First dose time',
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (context) => ModuleBottomSheet(
+        title: 'First dose time',
+        actions: SizedBox(
+          width: double.infinity,
+          child: FilledButton(
+            onPressed: () => Navigator.pop(context, selectedTime),
+            child: const Text('Save'),
+          ),
+        ),
+        child: SizedBox(
+          height: 200,
+          child: CupertinoDatePicker(
+            mode: CupertinoDatePickerMode.time,
+            initialDateTime: DateTime(
+              2000,
+              1,
+              1,
+              _firstDoseTime.hour,
+              _firstDoseTime.minute,
+            ),
+            onDateTimeChanged: (value) {
+              selectedTime = TimeOfDay.fromDateTime(value);
+            },
+          ),
+        ),
+      ),
     );
     if (selected != null && mounted) {
       setState(() => _firstDoseTime = selected);
@@ -1368,62 +1419,57 @@ class _MedicineEditorDialogState extends State<_MedicineEditorDialog> {
   }
 
   @override
-  Widget build(BuildContext context) => AlertDialog(
-    title: const Text('Add medication or supplement'),
-    content: SingleChildScrollView(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          TextField(
-            controller: _controller,
-            autofocus: true,
-            textCapitalization: TextCapitalization.sentences,
-            decoration: const InputDecoration(labelText: 'Name'),
-          ),
-          const SizedBox(height: 12),
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            title: const Text('First dose'),
-            subtitle: Text(
-              MaterialLocalizations.of(context).formatTimeOfDay(_firstDoseTime),
-            ),
-            trailing: IconButton(
-              onPressed: _chooseFirstDoseTime,
-              tooltip: 'Choose first dose time',
-              icon: const Icon(Icons.schedule),
-            ),
-          ),
-          DropdownButtonFormField<int>(
-            initialValue: _intervalHours,
-            decoration: const InputDecoration(labelText: 'Dose frequency'),
-            items: List.generate(
-              24,
-              (index) => DropdownMenuItem(
-                value: index + 1,
-                child: Text('Every ${index + 1} hours'),
-              ),
-            ),
-            onChanged: (hours) {
-              if (hours != null) setState(() => _intervalHours = hours);
-            },
-          ),
-          const Align(
-            alignment: Alignment.centerLeft,
-            child: Padding(
-              padding: EdgeInsets.only(top: 4),
-              child: Text('24 hours means once daily.'),
-            ),
-          ),
-        ],
-      ),
+  Widget build(BuildContext context) => ModuleBottomSheet(
+    title: 'Add medication or supplement',
+    actions: SizedBox(
+      width: double.infinity,
+      child: FilledButton(onPressed: _save, child: const Text('Add')),
     ),
-    actions: [
-      TextButton(
-        onPressed: () => Navigator.pop(context),
-        child: const Text('Cancel'),
-      ),
-      FilledButton(onPressed: _save, child: const Text('Add')),
-    ],
+    child: Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        TextField(
+          controller: _controller,
+          autofocus: true,
+          textCapitalization: TextCapitalization.sentences,
+          decoration: const InputDecoration(labelText: 'Name'),
+        ),
+        const SizedBox(height: 12),
+        ListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('First dose'),
+          subtitle: Text(
+            MaterialLocalizations.of(context).formatTimeOfDay(_firstDoseTime),
+          ),
+          trailing: IconButton(
+            onPressed: _chooseFirstDoseTime,
+            tooltip: 'Choose first dose time',
+            icon: const Icon(Icons.schedule),
+          ),
+        ),
+        DropdownButtonFormField<int>(
+          initialValue: _intervalHours,
+          decoration: const InputDecoration(labelText: 'Dose frequency'),
+          items: List.generate(
+            24,
+            (index) => DropdownMenuItem(
+              value: index + 1,
+              child: Text('Every ${index + 1} hours'),
+            ),
+          ),
+          onChanged: (hours) {
+            if (hours != null) setState(() => _intervalHours = hours);
+          },
+        ),
+        const Align(
+          alignment: Alignment.centerLeft,
+          child: Padding(
+            padding: EdgeInsets.only(top: 4),
+            child: Text('24 hours means once daily.'),
+          ),
+        ),
+      ],
+    ),
   );
 }
 

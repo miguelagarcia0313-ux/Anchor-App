@@ -64,5 +64,11 @@ service cloud.firestore {
              .affectedKeys().hasOnly(['budgets'])
         && request.resource.data.budgets is map;
     }
+
+    // Health, Fitness, Tasks, and other app modules keep their data under
+    // the owning user's module namespace.
+    match /users/{uid}/modules/{moduleId}/{document=**} {
+      allow read, write: if isOwner(uid);
+    }
   }
 }
