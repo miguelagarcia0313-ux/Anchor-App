@@ -1,10 +1,13 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../shared/anchor_module.dart';
+import '../../shared/user_cloud_sync.dart';
 
 class WorkoutEntry {
   WorkoutEntry({
@@ -45,12 +48,20 @@ class WorkoutEntry {
 }
 
 class FitnessModule implements AnchorModule {
-  FitnessModule({required this.userId});
+  FitnessModule({String? userId})
+    : _userIdOverride = userId,
+      _cloud = UserCloudSync.forCurrentUser(userIdOverride: userId);
 
   static const _legacyStorageKey = 'fitness.workouts';
   static const _legacyMigrationKey = 'fitness.userScopedMigrationComplete';
 
-  final String userId;
+  final String? _userIdOverride;
+
+  late final String userId =
+      _userIdOverride ??
+      (Firebase.apps.isEmpty
+          ? 'local'
+          : FirebaseAuth.instance.currentUser?.uid ?? 'local');
 
   String get _storageKey => 'fitness.$userId.workouts';
   String get _categoryDurationsKey => 'fitness.$userId.categoryDurations';
@@ -58,6 +69,7 @@ class FitnessModule implements AnchorModule {
   final List<WorkoutEntry> _entries = [];
   final Map<String, Duration> _categoryDurations = {};
   final ValueNotifier<int> _revision = ValueNotifier(0);
+  final UserCloudSync? _cloud;
   late final Future<void> _ready = _loadEntries();
 
   @override
@@ -109,29 +121,35 @@ class FitnessModule implements AnchorModule {
 
   Future<void> persistCategoryDurations() async {
     final preferences = await SharedPreferences.getInstance();
+    final encodedDurations = _categoryDurations.map(
+      (category, duration) => MapEntry(category, duration.inSeconds),
+    );
     await preferences.setString(
       _categoryDurationsKey,
-      jsonEncode(
-        _categoryDurations.map(
-          (category, duration) => MapEntry(category, duration.inSeconds),
-        ),
-      ),
+      jsonEncode(encodedDurations),
     );
+    if (_cloud != null) {
+      await _cloud
+          .moduleDocument('fitness')
+          .collection('settings')
+          .doc('categoryDurations')
+          .set({'durations': encodedDurations});
+    }
   }
 
   Future<void> addEntry(WorkoutDraft draft) async {
-    _entries.add(
-      WorkoutEntry(
-        id: DateTime.now().microsecondsSinceEpoch.toString(),
-        name: draft.name,
-        category: draft.category,
-        sets: draft.sets,
-        reps: draft.reps,
-        minimumWeight: draft.minimumWeight,
-      ),
+    final entry = WorkoutEntry(
+      id: DateTime.now().microsecondsSinceEpoch.toString(),
+      name: draft.name,
+      category: draft.category,
+      sets: draft.sets,
+      reps: draft.reps,
+      minimumWeight: draft.minimumWeight,
     );
+    _entries.add(entry);
     _notifyChanged();
     await _persistEntries();
+    await _persistCloudEntry(entry);
   }
 
   Future<void> updateEntry(WorkoutEntry entry, WorkoutDraft draft) async {
@@ -143,12 +161,14 @@ class FitnessModule implements AnchorModule {
       ..minimumWeight = draft.minimumWeight;
     _notifyChanged();
     await _persistEntries();
+    await _persistCloudEntry(entry);
   }
 
   Future<void> deleteEntry(WorkoutEntry entry) async {
     _entries.remove(entry);
     _notifyChanged();
     await _persistEntries();
+    await _cloud?.records('fitness', 'workouts').doc(entry.id).delete();
   }
 
   Future<void> _loadEntries() async {
@@ -184,6 +204,71 @@ class FitnessModule implements AnchorModule {
         );
     }
     _notifyChanged();
+    final cloud = _cloud;
+    if (cloud == null) return;
+
+    await cloud.migrateLocalDataOnce('fitness', () async {
+      await cloud.setRecords(
+        'fitness',
+        'workouts',
+        _entries.map((entry) => MapEntry(entry.id, entry.toMap())),
+      );
+      await cloud
+          .moduleDocument('fitness')
+          .collection('settings')
+          .doc('categoryDurations')
+          .set({
+            'durations': _categoryDurations.map(
+              (category, duration) => MapEntry(category, duration.inSeconds),
+            ),
+          });
+    });
+
+    cloud
+        .records('fitness', 'workouts')
+        .snapshots()
+        .listen(
+          (snapshot) {
+            _entries
+              ..clear()
+              ..addAll(
+                snapshot.docs.map((document) {
+                  return WorkoutEntry.fromMap(document.data());
+                }),
+              );
+            _notifyChanged();
+            unawaited(_persistEntries());
+          },
+          onError: (Object error, StackTrace stackTrace) {
+            cloud.reportStreamError('fitness', error, stackTrace);
+          },
+        );
+    cloud
+        .moduleDocument('fitness')
+        .collection('settings')
+        .doc('categoryDurations')
+        .snapshots()
+        .listen(
+          (snapshot) {
+            final durations =
+                snapshot.data()?['durations'] as Map<String, dynamic>? ?? {};
+            _categoryDurations
+              ..clear()
+              ..addAll(
+                durations.map(
+                  (category, seconds) => MapEntry(
+                    category,
+                    Duration(seconds: (seconds as num).toInt()),
+                  ),
+                ),
+              );
+            _notifyChanged();
+            unawaited(_persistCategoryDurationsLocally());
+          },
+          onError: (Object error, StackTrace stackTrace) {
+            cloud.reportStreamError('fitness', error, stackTrace);
+          },
+        );
   }
 
   Future<void> _persistEntries() async {
@@ -192,6 +277,25 @@ class FitnessModule implements AnchorModule {
       _storageKey,
       _entries.map((entry) => jsonEncode(entry.toMap())).toList(),
     );
+  }
+
+  Future<void> _persistCategoryDurationsLocally() async {
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setString(
+      _categoryDurationsKey,
+      jsonEncode(
+        _categoryDurations.map(
+          (category, duration) => MapEntry(category, duration.inSeconds),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _persistCloudEntry(WorkoutEntry entry) async {
+    await _cloud
+        ?.records('fitness', 'workouts')
+        .doc(entry.id)
+        .set(entry.toMap());
   }
 
   void _notifyChanged() {

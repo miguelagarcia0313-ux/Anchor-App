@@ -1,11 +1,15 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../shared/anchor_module.dart';
+import '../../shared/user_cloud_sync.dart';
 
 class WeightEntry {
   WeightEntry({
@@ -68,11 +72,9 @@ class MedicineEntry {
 }
 
 class HealthModule implements AnchorModule {
-  HealthModule({
-    required this.userId,
-    this.onMedicineSaved,
-    this.onMedicineDeleted,
-  });
+  HealthModule({String? userId, this.onMedicineSaved, this.onMedicineDeleted})
+    : _userIdOverride = userId,
+      _cloud = UserCloudSync.forCurrentUser(userIdOverride: userId);
 
   static const _legacyWeightsKey = 'health.weights';
   static const _legacyWaterGoalKey = 'health.water.goal';
@@ -83,9 +85,15 @@ class HealthModule implements AnchorModule {
   static const _weightUnitPreference = 'weightUnit';
   static const _waterHistoryPreference = 'water.history';
 
-  final String userId;
+  final String? _userIdOverride;
   final Future<void> Function(MedicineEntry medicine)? onMedicineSaved;
   final Future<void> Function(String medicationId)? onMedicineDeleted;
+
+  late final String userId =
+      _userIdOverride ??
+      (Firebase.apps.isEmpty
+          ? 'local'
+          : FirebaseAuth.instance.currentUser?.uid ?? 'local');
 
   String get _weightsKey => 'health.$userId.weights';
   String get _waterGoalKey => 'health.$userId.water.goal';
@@ -102,7 +110,9 @@ class HealthModule implements AnchorModule {
   double waterTodayOz = 0;
   String weightUnit = 'lb';
   String _dailyDate = _dateKey(DateTime.now());
+  bool _resetMedicinesWhenSynced = false;
   final ValueNotifier<int> revision = ValueNotifier(0);
+  final UserCloudSync? _cloud;
   late final Future<void> ready = _load();
 
   @override
@@ -136,14 +146,14 @@ class HealthModule implements AnchorModule {
       _HealthDetailView(module: this);
 
   Future<void> addWeight(double value, String unit) async {
-    _weights.add(
-      WeightEntry(
-        id: DateTime.now().microsecondsSinceEpoch.toString(),
-        kilograms: unit == 'lb' ? value / 2.2046226218 : value,
-        recordedAt: DateTime.now(),
-      ),
+    final entry = WeightEntry(
+      id: DateTime.now().microsecondsSinceEpoch.toString(),
+      kilograms: unit == 'lb' ? value / 2.2046226218 : value,
+      recordedAt: DateTime.now(),
     );
+    _weights.add(entry);
     await _saveWeights();
+    await _cloud?.records('health', 'weights').doc(entry.id).set(entry.toMap());
     _notifyChanged();
   }
 
@@ -154,12 +164,14 @@ class HealthModule implements AnchorModule {
   ) async {
     entry.kilograms = unit == 'lb' ? value / 2.2046226218 : value;
     await _saveWeights();
+    await _cloud?.records('health', 'weights').doc(entry.id).set(entry.toMap());
     _notifyChanged();
   }
 
   Future<void> deleteWeight(WeightEntry entry) async {
     _weights.remove(entry);
     await _saveWeights();
+    await _cloud?.records('health', 'weights').doc(entry.id).delete();
     _notifyChanged();
   }
 
@@ -167,6 +179,9 @@ class HealthModule implements AnchorModule {
     waterGoalOz = ounces;
     final preferences = await SharedPreferences.getInstance();
     await preferences.setDouble(_waterGoalKey, ounces);
+    await _cloud?.setModuleSettings('health', 'profile', {
+      'waterGoalOz': ounces,
+    });
     _notifyChanged();
   }
 
@@ -175,6 +190,7 @@ class HealthModule implements AnchorModule {
     weightUnit = unit;
     final preferences = await SharedPreferences.getInstance();
     await preferences.setString(_weightUnitKey, unit);
+    await _cloud?.setModuleSettings('health', 'profile', {'weightUnit': unit});
     _notifyChanged();
   }
 
@@ -193,11 +209,14 @@ class HealthModule implements AnchorModule {
   Future<void> _saveWaterLog() async {
     final preferences = await SharedPreferences.getInstance();
     _waterHistory[_dailyDate] = waterTodayOz;
-    await preferences.setString(
-      _waterLogKey,
-      jsonEncode({'date': _dailyDate, 'ounces': waterTodayOz}),
-    );
+    final waterLog = {
+      'date': _dailyDate,
+      'ounces': waterTodayOz,
+      'medicineDate': _dailyDate,
+    };
+    await preferences.setString(_waterLogKey, jsonEncode(waterLog));
     await preferences.setString(_waterHistoryKey, jsonEncode(_waterHistory));
+    await _cloud?.records('health', 'days').doc(_dailyDate).set(waterLog);
   }
 
   Future<void> addMedicine({
@@ -216,12 +235,20 @@ class HealthModule implements AnchorModule {
     _medicines.add(medicine);
     await _saveMedicines();
     await onMedicineSaved?.call(medicine);
+    await _cloud
+        ?.records('health', 'medicines')
+        .doc(medicine.id)
+        .set(medicine.toMap());
     _notifyChanged();
   }
 
   Future<void> toggleMedicine(MedicineEntry medicine, bool isTaken) async {
     medicine.isTaken = isTaken;
     await _saveMedicines();
+    await _cloud
+        ?.records('health', 'medicines')
+        .doc(medicine.id)
+        .set(medicine.toMap());
     _notifyChanged();
   }
 
@@ -229,6 +256,7 @@ class HealthModule implements AnchorModule {
     _medicines.remove(medicine);
     await _saveMedicines();
     await onMedicineDeleted?.call(medicine.id);
+    await _cloud?.records('health', 'medicines').doc(medicine.id).delete();
     _notifyChanged();
   }
 
@@ -240,6 +268,7 @@ class HealthModule implements AnchorModule {
     }
     await _saveWaterLog();
     await _saveMedicines();
+    await _persistMedicinesToCloud();
     for (final medicine in _medicines) {
       await onMedicineSaved?.call(medicine);
     }
@@ -299,7 +328,11 @@ class HealthModule implements AnchorModule {
       for (final medicine in _medicines) {
         medicine.isTaken = false;
       }
-      await _saveMedicines();
+      if (_cloud == null) {
+        await _saveMedicines();
+      } else {
+        await _persistMedicinesLocally();
+      }
     } else {
       _dailyDate = today;
     }
@@ -307,6 +340,161 @@ class HealthModule implements AnchorModule {
       await onMedicineSaved?.call(medicine);
     }
     _notifyChanged();
+
+    final cloud = _cloud;
+    if (cloud == null) return;
+
+    await cloud.migrateLocalDataOnce('health', () async {
+      await cloud.setRecords(
+        'health',
+        'weights',
+        _weights.map((entry) => MapEntry(entry.id, entry.toMap())),
+      );
+      await cloud.setRecords(
+        'health',
+        'medicines',
+        _medicines.map((entry) => MapEntry(entry.id, entry.toMap())),
+      );
+      await cloud.setModuleSettings('health', 'profile', {
+        'waterGoalOz': waterGoalOz,
+        'weightUnit': weightUnit,
+      });
+      await cloud.setRecords(
+        'health',
+        'days',
+        _waterHistory.entries.map(
+          (entry) => MapEntry(entry.key, {
+            'date': entry.key,
+            'ounces': entry.value,
+            'medicineDate': entry.key == _dailyDate ? _dailyDate : '',
+          }),
+        ),
+      );
+      await cloud.records('health', 'days').doc(_dailyDate).set({
+        'date': _dailyDate,
+        'ounces': waterTodayOz,
+        'medicineDate': _dailyDate,
+      });
+    });
+
+    cloud
+        .records('health', 'weights')
+        .snapshots()
+        .listen(
+          (snapshot) {
+            _weights
+              ..clear()
+              ..addAll(
+                snapshot.docs.map((document) {
+                  return WeightEntry.fromMap(document.data());
+                }),
+              );
+            _notifyChanged();
+            unawaited(_persistWeightsLocally());
+          },
+          onError: (Object error, StackTrace stackTrace) {
+            cloud.reportStreamError('health', error, stackTrace);
+          },
+        );
+    cloud
+        .records('health', 'medicines')
+        .snapshots()
+        .listen(
+          (snapshot) async {
+            for (final change in snapshot.docChanges) {
+              if (change.type == DocumentChangeType.removed) {
+                await onMedicineDeleted?.call(change.doc.id);
+              }
+            }
+            _medicines
+              ..clear()
+              ..addAll(
+                snapshot.docs.map((document) {
+                  return MedicineEntry.fromMap(document.data());
+                }),
+              );
+            if (_resetMedicinesWhenSynced) {
+              for (final medicine in _medicines) {
+                medicine.isTaken = false;
+              }
+              unawaited(_persistMedicinesToCloud());
+            }
+            _notifyChanged();
+            unawaited(_persistMedicinesLocally());
+            for (final medicine in _medicines) {
+              await onMedicineSaved?.call(medicine);
+            }
+          },
+          onError: (Object error, StackTrace stackTrace) {
+            cloud.reportStreamError('health', error, stackTrace);
+          },
+        );
+    cloud
+        .moduleDocument('health')
+        .collection('settings')
+        .doc('profile')
+        .snapshots()
+        .listen(
+          (snapshot) {
+            final waterGoal = snapshot.data()?['waterGoalOz'];
+            if (waterGoal is num) {
+              waterGoalOz = waterGoal.toDouble();
+              unawaited(_persistWaterGoalLocally());
+            }
+            final syncedWeightUnit = snapshot.data()?['weightUnit'];
+            if (syncedWeightUnit == 'lb' || syncedWeightUnit == 'kg') {
+              weightUnit = syncedWeightUnit as String;
+              unawaited(_persistWeightUnitLocally());
+            }
+            _notifyChanged();
+          },
+          onError: (Object error, StackTrace stackTrace) {
+            cloud.reportStreamError('health', error, stackTrace);
+          },
+        );
+    cloud
+        .records('health', 'days')
+        .snapshots()
+        .listen(
+          (snapshot) {
+            if (snapshot.docs.isEmpty && snapshot.metadata.isFromCache) return;
+            _waterHistory
+              ..clear()
+              ..addEntries(
+                snapshot.docs.map((document) {
+                  final data = document.data();
+                  return MapEntry(
+                    data['date'] as String? ?? document.id,
+                    (data['ounces'] as num? ?? 0).toDouble(),
+                  );
+                }),
+              );
+            final dailyData = snapshot.docs
+                .where((document) => document.id == today)
+                .firstOrNull
+                ?.data();
+            waterTodayOz = dailyData == null
+                ? 0
+                : (dailyData['ounces'] as num? ?? 0).toDouble();
+            _dailyDate = today;
+            _resetMedicinesWhenSynced = dailyData?['medicineDate'] != today;
+            _notifyChanged();
+            unawaited(_persistWaterHistoryLocally());
+            unawaited(_persistWaterLogLocally());
+            if (dailyData?['medicineDate'] != today) {
+              for (final medicine in _medicines) {
+                medicine.isTaken = false;
+              }
+              unawaited(_saveMedicines());
+              unawaited(_persistMedicinesToCloud());
+              unawaited(_saveWaterLog());
+              _notifyChanged();
+            }
+          },
+          onError: (Object error, StackTrace stackTrace) {
+            cloud.reportStreamError('health', error, stackTrace);
+          },
+        );
   }
 
   Future<void> _migrateLegacyData(SharedPreferences preferences) async {
@@ -357,6 +545,56 @@ class HealthModule implements AnchorModule {
       _medicines.map((entry) => jsonEncode(entry.toMap())).toList(),
     );
     await preferences.setString(_medicineDateKey, _dailyDate);
+  }
+
+  Future<void> _persistMedicinesToCloud() async {
+    final cloud = _cloud;
+    if (cloud == null) return;
+    await cloud.setRecords(
+      'health',
+      'medicines',
+      _medicines.map((entry) => MapEntry(entry.id, entry.toMap())),
+    );
+  }
+
+  Future<void> _persistWeightsLocally() async {
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setStringList(
+      _weightsKey,
+      _weights.map((entry) => jsonEncode(entry.toMap())).toList(),
+    );
+  }
+
+  Future<void> _persistMedicinesLocally() async {
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setStringList(
+      _medicinesKey,
+      _medicines.map((entry) => jsonEncode(entry.toMap())).toList(),
+    );
+    await preferences.setString(_medicineDateKey, _dailyDate);
+  }
+
+  Future<void> _persistWaterGoalLocally() async {
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setDouble(_waterGoalKey, waterGoalOz);
+  }
+
+  Future<void> _persistWeightUnitLocally() async {
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setString(_weightUnitKey, weightUnit);
+  }
+
+  Future<void> _persistWaterHistoryLocally() async {
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setString(_waterHistoryKey, jsonEncode(_waterHistory));
+  }
+
+  Future<void> _persistWaterLogLocally() async {
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setString(
+      _waterLogKey,
+      jsonEncode({'date': _dailyDate, 'ounces': waterTodayOz}),
+    );
   }
 
   void _notifyChanged() => revision.value++;
@@ -881,12 +1119,17 @@ class _HealthDetailViewState extends State<_HealthDetailView> {
                   contentPadding: EdgeInsets.zero,
                   title: Text(medicine.name),
                   value: medicine.isTaken,
-                  onChanged: (checked) {
-                    widget.module.toggleMedicine(medicine, checked ?? false);
+                  onChanged: (checked) async {
+                    await widget.module.toggleMedicine(
+                      medicine,
+                      checked ?? false,
+                    );
                   },
                   secondary: IconButton(
                     tooltip: 'Remove item',
-                    onPressed: () => widget.module.deleteMedicine(medicine),
+                    onPressed: () async {
+                      await widget.module.deleteMedicine(medicine);
+                    },
                     icon: const Icon(Icons.close),
                   ),
                 ),
