@@ -1,9 +1,13 @@
+import 'dart:async';
 import 'dart:convert';
 
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../shared/anchor_module.dart';
+import '../../shared/user_cloud_sync.dart';
 import 'task_date_parser.dart';
 
 bool _isDateOnlyDueAt(DateTime date) =>
@@ -86,17 +90,25 @@ enum _TaskFilter { all, today, upcoming, overdue, noDueDate, completed }
 enum _TaskSort { dueSoonest, dueLatest, title }
 
 class TasksModule implements AnchorModule {
-  TasksModule({this.userId = 'local'});
+  TasksModule({String? userId})
+    : _userIdOverride = userId,
+      _cloud = UserCloudSync.forCurrentUser(userIdOverride: userId);
 
   static const _legacyStorageKey = 'tasks.entries';
   static const _legacyMigrationKey = 'tasks.userScopedMigrationComplete';
 
-  final String userId;
+  final String? _userIdOverride;
 
+  late final String userId =
+      _userIdOverride ??
+      (Firebase.apps.isEmpty
+          ? 'local'
+          : FirebaseAuth.instance.currentUser?.uid ?? 'local');
   String get _storageKey => 'tasks.$userId.entries';
 
   final List<_TaskEntry> _entries = [];
   final ValueNotifier<int> _revision = ValueNotifier(0);
+  final UserCloudSync? _cloud;
   late final Future<void> _ready = _loadEntries();
 
   @override
@@ -151,34 +163,33 @@ class TasksModule implements AnchorModule {
     _revision.value++;
   }
 
-  void _addEntry(_TaskDraft draft) {
-    _entries.add(
-      _TaskEntry(
-        id: DateTime.now().microsecondsSinceEpoch.toString(),
-        title: draft.title,
-        notes: draft.notes,
-        isReminder: draft.isReminder,
-        dueAt: draft.dueAt,
-      ),
+  Future<void> _addEntry(_TaskDraft draft) async {
+    final entry = _TaskEntry(
+      id: DateTime.now().microsecondsSinceEpoch.toString(),
+      title: draft.title,
+      notes: draft.notes,
+      isReminder: draft.isReminder,
+      dueAt: draft.dueAt,
     );
+    _entries.add(entry);
     _notifyChanged();
-    _persistEntries();
+    await _persistEntries();
   }
 
-  void _updateEntry(_TaskEntry entry, _TaskDraft draft) {
+  Future<void> _updateEntry(_TaskEntry entry, _TaskDraft draft) async {
     entry
       ..title = draft.title
       ..notes = draft.notes
       ..isReminder = draft.isReminder
       ..dueAt = draft.dueAt;
     _notifyChanged();
-    _persistEntries();
+    await _persistEntries();
   }
 
-  void _deleteEntry(_TaskEntry entry) {
+  Future<void> _deleteEntry(_TaskEntry entry) async {
     _entries.remove(entry);
     _notifyChanged();
-    _persistEntries();
+    await _persistEntries();
   }
 
   Future<void> syncMedicationDoseReminders({
@@ -273,9 +284,46 @@ class TasksModule implements AnchorModule {
         ),
       );
     _notifyChanged();
+    final cloud = _cloud;
+    if (cloud == null) return;
+    await cloud.migrateLocalDataOnce('tasks', () async {
+      await cloud.setRecords(
+        'tasks',
+        'entries',
+        _entries.map((entry) => MapEntry(entry.id, entry.toMap())),
+      );
+    });
+    cloud
+        .records('tasks', 'entries')
+        .snapshots()
+        .listen(
+          (snapshot) {
+            _entries
+              ..clear()
+              ..addAll(
+                snapshot.docs.map((document) {
+                  return _TaskEntry.fromMap(document.data());
+                }),
+              );
+            _notifyChanged();
+            unawaited(_persistEntriesLocally());
+          },
+          onError: (Object error, StackTrace stackTrace) {
+            cloud.reportStreamError('tasks', error, stackTrace);
+          },
+        );
   }
 
   Future<void> _persistEntries() async {
+    await _persistEntriesLocally();
+    await _cloud?.replaceRecords(
+      'tasks',
+      'entries',
+      _entries.map((entry) => MapEntry(entry.id, entry.toMap())),
+    );
+  }
+
+  Future<void> _persistEntriesLocally() async {
     final preferences = await SharedPreferences.getInstance();
     await preferences.setStringList(
       _storageKey,
@@ -297,13 +345,29 @@ class _TasksDetailViewState extends State<_TasksDetailView> {
   _TaskFilter _filter = _TaskFilter.all;
   _TaskSort _sort = _TaskSort.dueSoonest;
 
+  @override
+  void initState() {
+    super.initState();
+    widget.module._revision.addListener(_handleModuleChanged);
+  }
+
+  @override
+  void dispose() {
+    widget.module._revision.removeListener(_handleModuleChanged);
+    super.dispose();
+  }
+
+  void _handleModuleChanged() {
+    if (mounted) setState(() {});
+  }
+
   Future<void> _createEntry() async {
     final draft = await showDialog<_TaskDraft>(
       context: context,
       builder: (context) => const _TaskEditorDialog(),
     );
     if (draft != null) {
-      widget.module._addEntry(draft);
+      await widget.module._addEntry(draft);
       setState(() {});
     }
   }
@@ -314,7 +378,7 @@ class _TasksDetailViewState extends State<_TasksDetailView> {
       builder: (context) => _TaskEditorDialog(entry: entry),
     );
     if (draft != null) {
-      widget.module._updateEntry(entry, draft);
+      await widget.module._updateEntry(entry, draft);
       setState(() {});
     }
   }
@@ -338,7 +402,7 @@ class _TasksDetailViewState extends State<_TasksDetailView> {
       ),
     );
     if (shouldDelete == true) {
-      widget.module._deleteEntry(entry);
+      await widget.module._deleteEntry(entry);
       setState(() {});
     }
   }
@@ -386,12 +450,12 @@ class _TasksDetailViewState extends State<_TasksDetailView> {
                                 onTap: () => _editEntry(entry),
                                 leading: Checkbox(
                                   value: entry.isComplete,
-                                  onChanged: (value) {
+                                  onChanged: (value) async {
                                     setState(() {
                                       entry.isComplete = value ?? false;
                                     });
                                     widget.module._notifyChanged();
-                                    widget.module._persistEntries();
+                                    await widget.module._persistEntries();
                                   },
                                 ),
                                 title: Text(
