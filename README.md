@@ -51,9 +51,13 @@ The first screen is a Firebase email/password login. Before running the app, con
 3. Install the FlutterFire CLI with `dart pub global activate flutterfire_cli`.
 4. From the project root, run `flutterfire configure` and select Android, iOS, macOS, and Web as needed. This creates `lib/firebase_options.dart` and registers the app identifiers.
 5. In Firebase Console, open **Authentication > Sign-in method**, enable **Email/Password**, and save.
-6. Run `flutter pub get`, then `flutter run`.
+6. In Firebase Console, create a Cloud Firestore database for the project.
+7. Deploy the included per-user security rules with `firebase deploy --only firestore:rules`.
+8. Run `flutter pub get`, then `flutter run`.
 
 The generated `lib/firebase_options.dart` is project-specific and is intentionally not included in this repository. The authentication gate sends signed-in users to the dashboard and everyone else to the login screen. The login screen also supports creating a new email/password account.
+
+Health, Fitness, and Tasks sync through Firestore under each signed-in user's account. Existing local records are uploaded once on the first signed-in sync; later updates are shared between the app and browser. When no Firebase user is available, the modules use local storage.
 
 ### Run in a web browser
 
@@ -115,13 +119,13 @@ When a module introduces a model that must survive app restarts, follow these ru
 1. Give every model a stable `id`. Do not use the list index as an identifier.
 2. Include the module name in the stored record, such as `moduleType: 'finance'`, so records cannot be confused between modules. Use `TrackableEntry` in `lib/shared/trackable_entry.dart` when the data fits its shared shape.
 3. Implement both serialization directions: a `toMap()`/JSON method for saving and a `fromMap()`/JSON factory for loading. Store dates in ISO-8601 format and convert booleans consistently.
-4. Link user-owned data to `FirebaseAuth.instance.currentUser!.uid`. Storage keys and database queries must include the UID; never put all users' records under one global key.
+4. Link user-owned data to `FirebaseAuth.instance.currentUser!.uid`. Firestore paths and local storage keys must include the UID; never put all users' records under one global key.
 5. Load the current user's records before showing the module's editable UI. Show a loading state while the asynchronous load is in progress.
 6. Save after every create, edit, delete, and completion/status change. Do not rely on an in-memory list as the source of truth.
 7. Keep module IDs stable once released. Add the module to `_allModules` and use the same ID for dashboard preferences, filtering, and stored records.
 8. Add a test that creates a model, recreates the module, and verifies the data returns. Also verify that two user IDs cannot see each other's data.
 
-Dashboard module visibility follows the same user-scoped pattern through `lib/shell/module_preferences.dart`. Local storage survives app sessions on the same device; use a Firebase database when the model must sync across devices.
+Dashboard module visibility follows the same user-scoped pattern through `lib/shell/module_preferences.dart`. Health, Fitness, and Tasks use Firestore for signed-in users and retain local storage for offline cache and first-login migration. Other modules using only local storage do not sync across devices.
 
 ## Contributing
 

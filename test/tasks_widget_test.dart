@@ -213,29 +213,47 @@ void main() {
     expect(find.textContaining('Reminder · '), findsOneWidget);
   });
 
-  testWidgets('uses the specific date in a task title', (
-    WidgetTester tester,
-  ) async {
-    final module = TasksModule();
+testWidgets('uses the specific date in a task title', (
+  WidgetTester tester,
+) async {
+  const months = [
+    'January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December',
+  ];
+  String ordinal(int day) {
+    if (day >= 11 && day <= 13) return '${day}th';
+    switch (day % 10) {
+      case 1:
+        return '${day}st';
+      case 2:
+        return '${day}nd';
+      case 3:
+        return '${day}rd';
+      default:
+        return '${day}th';
+    }
+  }
 
-    await tester.pumpWidget(_detailApp(module));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Add Task/Reminder'));
-    await tester.pumpAndSettle();
+  final target = DateTime.now().add(const Duration(days: 10));
+  final title =
+      'Posert due ${months[target.month - 1]} ${ordinal(target.day)} at 8 AM';
+  final module = TasksModule();
 
-    await tester.enterText(
-      find.byType(TextField).first,
-      'Posert due October 14th at 8 AM',
-    );
-    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
-    await tester.pumpAndSettle();
+  await tester.pumpWidget(_detailApp(module));
+  await tester.pumpAndSettle();
+  await tester.tap(find.text('Add Task/Reminder'));
+  await tester.pumpAndSettle();
 
-    final expectedDate = MaterialLocalizations.of(
-      tester.element(find.text('Posert due October 14th at 8 AM')),
-    ).formatMediumDate(DateTime(DateTime.now().year, 10, 14));
-    expect(find.textContaining(expectedDate), findsOneWidget);
-    expect(find.textContaining('at 8:00 AM'), findsOneWidget);
-  });
+  await tester.enterText(find.byType(TextField).first, title);
+  await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+  await tester.pumpAndSettle();
+
+  final expectedDate = MaterialLocalizations.of(
+    tester.element(find.text(title)),
+  ).formatMediumDate(DateTime(target.year, target.month, target.day));
+  expect(find.textContaining(expectedDate), findsOneWidget);
+  expect(find.textContaining('at 8:00 AM'), findsOneWidget);
+});
 
   testWidgets('does not save a task with an empty title', (
     WidgetTester tester,
