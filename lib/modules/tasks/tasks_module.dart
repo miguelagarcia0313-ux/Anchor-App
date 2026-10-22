@@ -19,6 +19,17 @@ bool _isDateOnlyDueAt(DateTime date) =>
 String _medicationDoseTaskId(String medicationId, DateTime dueAt) =>
     '$medicationId:${dueAt.toIso8601String()}';
 
+const _reminderLeadTimeLabels = <int, String>{
+  5: '5 minutes before',
+  10: '10 minutes before',
+  15: '15 minutes before',
+  30: '30 minutes before',
+  60: '1 hour before',
+  120: '2 hours before',
+  1440: '1 day before',
+  10080: '1 week before',
+};
+
 class _TaskEntry {
   _TaskEntry({
     required this.id,
@@ -28,6 +39,7 @@ class _TaskEntry {
     this.medicationId,
     this.medicationName,
     this.dueAt,
+    this.reminderMinutesBefore,
     this.isComplete = false,
   });
 
@@ -38,6 +50,7 @@ class _TaskEntry {
   String? medicationId;
   String? medicationName;
   DateTime? dueAt;
+  int? reminderMinutesBefore;
   bool isComplete;
 
   Map<String, dynamic> toMap() {
@@ -49,6 +62,7 @@ class _TaskEntry {
       'medicationId': medicationId,
       'medicationName': medicationName,
       'dueAt': dueAt?.toIso8601String(),
+      'reminderMinutesBefore': reminderMinutesBefore,
       'isComplete': isComplete,
     };
   }
@@ -66,6 +80,7 @@ class _TaskEntry {
       dueAt: map['dueAt'] == null
           ? null
           : DateTime.tryParse(map['dueAt'] as String),
+      reminderMinutesBefore: map['reminderMinutesBefore'] as int?,
       isComplete: map['isComplete'] as bool? ?? false,
     );
   }
@@ -77,12 +92,14 @@ class _TaskDraft {
     required this.notes,
     required this.isReminder,
     this.dueAt,
+    this.reminderMinutesBefore,
   });
 
   final String title;
   final String notes;
   final bool isReminder;
   final DateTime? dueAt;
+  final int? reminderMinutesBefore;
 }
 
 enum _TaskFilter { all, today, upcoming, overdue, noDueDate, completed }
@@ -170,6 +187,7 @@ class TasksModule implements AnchorModule {
       notes: draft.notes,
       isReminder: draft.isReminder,
       dueAt: draft.dueAt,
+      reminderMinutesBefore: draft.reminderMinutesBefore,
     );
     _entries.add(entry);
     _notifyChanged();
@@ -181,7 +199,8 @@ class TasksModule implements AnchorModule {
       ..title = draft.title
       ..notes = draft.notes
       ..isReminder = draft.isReminder
-      ..dueAt = draft.dueAt;
+      ..dueAt = draft.dueAt
+      ..reminderMinutesBefore = draft.reminderMinutesBefore;
     _notifyChanged();
     await _persistEntries();
   }
@@ -445,6 +464,11 @@ class _TasksDetailViewState extends State<_TasksDetailView> {
                               const SizedBox(height: 8),
                           itemBuilder: (context, index) {
                             final entry = filteredEntries[index];
+                            final isOverdue =
+                                !entry.isComplete &&
+                                entry.dueAt?.isBefore(DateTime.now()) == true;
+                            final isOverdueReminder =
+                                entry.isReminder && isOverdue;
                             return Card(
                               child: ListTile(
                                 onTap: () => _editEntry(entry),
@@ -459,8 +483,13 @@ class _TasksDetailViewState extends State<_TasksDetailView> {
                                   },
                                 ),
                                 title: Text(
-                                  entry.title,
+                                  isOverdue
+                                      ? '${entry.title} - OVERDUE'
+                                      : entry.title,
                                   style: TextStyle(
+                                    color: isOverdueReminder
+                                        ? Theme.of(context).colorScheme.error
+                                        : null,
                                     decoration: entry.isComplete
                                         ? TextDecoration.lineThrough
                                         : null,
@@ -719,6 +748,13 @@ class _EntrySubtitle extends StatelessWidget {
     if (entry.medicationName != null) {
       details.add('Medication: ${entry.medicationName}');
     }
+    final reminderLeadTime = entry.reminderMinutesBefore;
+    if (reminderLeadTime != null) {
+      final label = _reminderLeadTimeLabels[reminderLeadTime];
+      if (label != null) {
+        details.add('Notification: $label');
+      }
+    }
     if (entry.dueAt != null) {
       final localizations = MaterialLocalizations.of(context);
       final date = localizations.formatMediumDate(entry.dueAt!);
@@ -752,6 +788,7 @@ class _TaskEditorDialogState extends State<_TaskEditorDialog> {
   late final TextEditingController _notesController;
   late bool _isReminder;
   DateTime? _dueAt;
+  int? _reminderMinutesBefore;
 
   @override
   void initState() {
@@ -760,6 +797,7 @@ class _TaskEditorDialogState extends State<_TaskEditorDialog> {
     _notesController = TextEditingController(text: widget.entry?.notes);
     _isReminder = widget.entry?.isReminder ?? false;
     _dueAt = widget.entry?.dueAt;
+    _reminderMinutesBefore = widget.entry?.reminderMinutesBefore;
     _titleController.addListener(_updateDueAtFromText);
     _notesController.addListener(_updateDueAtFromText);
   }
@@ -832,6 +870,7 @@ class _TaskEditorDialogState extends State<_TaskEditorDialog> {
         notes: _notesController.text.trim(),
         isReminder: _isReminder,
         dueAt: _dueAt,
+        reminderMinutesBefore: _reminderMinutesBefore,
       ),
     );
   }
@@ -888,6 +927,45 @@ class _TaskEditorDialogState extends State<_TaskEditorDialog> {
                 onPressed: _pickDueAt,
                 icon: const Icon(Icons.event_outlined),
                 label: Text(dueLabel),
+              ),
+            ),
+            const SizedBox(height: 12),
+            DropdownButtonFormField<int?>(
+              key: const Key('task_reminder_lead_time_dropdown'),
+              initialValue: _reminderMinutesBefore,
+              hint: const Text('No notification'),
+              isExpanded: true,
+              decoration: const InputDecoration(
+                labelText: 'Notify before due',
+                border: OutlineInputBorder(),
+              ),
+              items: [
+                const DropdownMenuItem<int?>(
+                  value: null,
+                  child: Text('No notification'),
+                ),
+                ..._reminderLeadTimeLabels.entries.map(
+                  (option) => DropdownMenuItem<int?>(
+                    value: option.key,
+                    child: Text(option.value),
+                  ),
+                ),
+              ],
+              onChanged: _dueAt == null
+                  ? null
+                  : (minutes) {
+                      setState(() {
+                        _reminderMinutesBefore = minutes;
+                      });
+                    },
+            ),
+            const SizedBox(height: 4),
+            const Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                'This setting is saved for future notifications. '
+                'Notifications are not sent yet.',
+                style: TextStyle(fontSize: 12),
               ),
             ),
           ],
