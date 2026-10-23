@@ -71,8 +71,8 @@ export function categorize(tx: CategorizableTx): AnchorCategory | null {
   if (pfc && SKIPPED_PRIMARY.has(pfc.primary)) return null;
 
   const merchant = ` ${normalize(tx.merchant_name ?? tx.name ?? "")} `;
-    if (SUBSCRIPTION_MERCHANTS.some((m) => merchant.includes(` ${m} `))) {
-      return "subscriptions";
+  if (SUBSCRIPTION_MERCHANTS.some((m) => merchant.includes(` ${m} `))) {
+    return "subscriptions";
   }
 
   // Gyms are recurring memberships, even when the merchant isn't on our list.

@@ -31,6 +31,8 @@ if (getApps().length === 0) initializeApp();
 const PLAID_CLIENT_ID = defineSecret("PLAID_CLIENT_ID");
 const PLAID_SECRET = defineSecret("PLAID_SECRET");
 const secrets = [PLAID_CLIENT_ID, PLAID_SECRET];
+/** Shared options: secrets + a scaling cap so a bug can't run up costs. */
+const callOpts = {secrets, maxInstances: 5};
 
 /** @return {PlaidApi} a sandbox client (secrets are read at call time) */
 function plaidClient(): PlaidApi {
@@ -54,7 +56,7 @@ function requireUid(request: CallableRequest): string {
 }
 
 /** Step 1: the app asks for a link_token to open Plaid Link. */
-export const createLinkToken = onCall({secrets}, async (request) => {
+export const createLinkToken = onCall(callOpts, async (request) => {
   const uid = requireUid(request);
   const {data} = await plaidClient().linkTokenCreate({
     user: {client_user_id: uid},
@@ -67,7 +69,7 @@ export const createLinkToken = onCall({secrets}, async (request) => {
 });
 
 /** Step 2: trade the public_token from Link for an access_token. */
-export const exchangePublicToken = onCall({secrets}, async (request) => {
+export const exchangePublicToken = onCall(callOpts, async (request) => {
   const uid = requireUid(request);
   const publicToken = request.data?.publicToken;
   if (typeof publicToken !== "string") {
@@ -116,7 +118,7 @@ function cleanInstitutionName(value: unknown): string | null {
 }
 
 /** Step 3: pull new/changed transactions and store them as expenses. */
-export const syncTransactions = onCall({secrets}, async (request) => {
+export const syncTransactions = onCall(callOpts, async (request) => {
   const uid = requireUid(request);
   const db = getFirestore();
   const itemRef = db.doc(`plaidItems/${uid}`);
