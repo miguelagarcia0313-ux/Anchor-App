@@ -61,6 +61,46 @@ void main() {
     expect(find.text('1 open · 0 reminders'), findsOneWidget);
   });
 
+  testWidgets('shows overdue reminder titles in the error color', (
+    WidgetTester tester,
+  ) async {
+    final module = TasksModule();
+    const title = 'Overdue reminder 2020-01-01';
+    const overdueTitle = '$title - OVERDUE';
+
+    await tester.pumpWidget(_detailApp(module));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Add Task/Reminder'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField).first, title);
+    await tester.tap(find.byType(SwitchListTile));
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pumpAndSettle();
+
+    final titleText = tester.widget<Text>(find.text(overdueTitle));
+    final errorColor = Theme.of(
+      tester.element(find.text(overdueTitle)),
+    ).colorScheme.error;
+    expect(titleText.style?.color, errorColor);
+  });
+
+  testWidgets('marks overdue task titles with OVERDUE', (
+    WidgetTester tester,
+  ) async {
+    final module = TasksModule();
+    const title = 'Overdue task 2020-01-01';
+
+    await tester.pumpWidget(_detailApp(module));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Add Task/Reminder'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField).first, title);
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('$title - OVERDUE'), findsOneWidget);
+  });
+
   testWidgets('sorts tasks by title', (WidgetTester tester) async {
     final module = TasksModule();
 
