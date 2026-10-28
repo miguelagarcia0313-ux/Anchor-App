@@ -46,6 +46,7 @@ void main() {
       find.byType(TextField).first,
       'Call dentist 3AM Wednesday',
     );
+    await tester.pump();
     await tester.tap(find.byKey(const Key('task_reminder_lead_time_dropdown')));
     await tester.pumpAndSettle();
     await tester.tap(find.text('10 minutes before').last);
