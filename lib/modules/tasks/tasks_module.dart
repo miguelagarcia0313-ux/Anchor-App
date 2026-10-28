@@ -231,6 +231,9 @@ class TasksModule implements AnchorModule {
       firstDoseHour,
       firstDoseMinute,
     );
+    while (doseAt.isBefore(now)) {
+      doseAt = doseAt.add(Duration(hours: intervalHours));
+    }
     final doses = <DateTime>[];
     while (doseAt.isBefore(horizon)) {
       doses.add(doseAt);
