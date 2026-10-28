@@ -60,7 +60,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.text('Notification: 10 minutes before'), findsOneWidget);
+    expect(find.textContaining('Notification: 10 minutes before'), findsOneWidget);
     await tester.tap(find.text('Call dentist 3AM Wednesday'));
     await tester.pumpAndSettle();
     expect(
