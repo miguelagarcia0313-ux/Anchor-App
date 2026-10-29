@@ -7,6 +7,22 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+/// The revamped Health screen is taller than the phone viewport, so scroll a
+/// control into view before tapping it.
+Future<void> _tapVisible(WidgetTester tester, Finder finder) async {
+  await tester.ensureVisible(finder);
+  await tester.pumpAndSettle();
+  await tester.tap(finder);
+  await tester.pumpAndSettle();
+}
+
+void _usePhoneScreen(WidgetTester tester) {
+  tester.view.physicalSize = const Size(390, 844);
+  tester.view.devicePixelRatio = 1;
+  addTearDown(tester.view.resetPhysicalSize);
+  addTearDown(tester.view.resetDevicePixelRatio);
+}
+
 void main() {
   test('health data persists per account', () async {
     SharedPreferences.setMockInitialValues({});
@@ -76,6 +92,29 @@ void main() {
     expect(module.waterTodayOz, 8);
   });
 
+  test('entries created back to back get unique ids', () async {
+    SharedPreferences.setMockInitialValues({});
+    final module = HealthModule(userId: 'unique-id-user');
+    await module.ready;
+    await module.addWeight(150, 'lb');
+    await module.addWeight(151, 'lb');
+    await module.addMedicine(
+      name: 'Vitamin D',
+      firstDoseHour: 8,
+      firstDoseMinute: 0,
+      intervalHours: 24,
+    );
+    await module.addMedicine(
+      name: 'Zinc',
+      firstDoseHour: 9,
+      firstDoseMinute: 0,
+      intervalHours: 24,
+    );
+
+    expect(module.weights.map((entry) => entry.id).toSet(), hasLength(2));
+    expect(module.medicines.map((entry) => entry.id).toSet(), hasLength(2));
+  });
+
   testWidgets('medication schedules create linked Tasks dose reminders', (
     tester,
   ) async {
@@ -123,10 +162,7 @@ void main() {
   testWidgets('health tracks weight, water, and daily medicines', (
     tester,
   ) async {
-    tester.view.physicalSize = const Size(390, 844);
-    tester.view.devicePixelRatio = 1;
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
+    _usePhoneScreen(tester);
     SharedPreferences.setMockInitialValues({});
     final tasks = TasksModule(userId: 'health-test-user');
     final module = HealthModule(
@@ -145,11 +181,11 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    await tester.tap(find.byTooltip('Add weight'));
-    await tester.pumpAndSettle();
+    await _tapVisible(tester, find.byTooltip('Add weight'));
     await tester.enterText(find.byType(TextField).first, '150');
     await tester.tap(find.text('Save'));
     await tester.pumpAndSettle();
+    // With a single entry the Latest and Average tiles both read 150 lb.
     expect(find.text('150 lb'), findsNWidgets(2));
 
     await module.addWeight(40, 'kg');
@@ -166,39 +202,37 @@ void main() {
     expect(plottedWeights[1], closeTo(40 * 2.2046226218, 0.0001));
     expect(plottedWeights[2], closeTo(100 * 2.2046226218, 0.0001));
 
-    await tester.tap(find.byType(DropdownButton<String>));
+    // The unit is now a lb/kg segmented toggle instead of a dropdown.
+    await tester.tap(
+      find.descendant(
+        of: find.byType(SegmentedButton<String>),
+        matching: find.text('kg'),
+      ),
+    );
     await tester.pumpAndSettle();
-    await tester.tap(find.text('kg').last);
-    await tester.pumpAndSettle();
+    expect(module.weightUnit, 'kg');
     final kilogramChart = tester.widget<LineChart>(find.byType(LineChart));
     expect(kilogramChart.data.minY, closeTo(40, 0.0001));
     expect(kilogramChart.data.maxY, closeTo(100, 0.0001));
 
-    await tester.tap(find.byTooltip('Set water goal'));
-    await tester.pumpAndSettle();
+    await _tapVisible(tester, find.byTooltip('Set water goal'));
     await tester.enterText(find.byType(TextField).first, '80');
     await tester.tap(find.text('Save'));
     await tester.pumpAndSettle();
 
-    await tester.tap(find.byTooltip('Add water'));
-    await tester.pumpAndSettle();
+    await _tapVisible(tester, find.byTooltip('Add water'));
     await tester.enterText(find.byType(TextField).first, '8');
     await tester.tap(find.text('Save'));
     await tester.pumpAndSettle();
     expect(find.text('8 / 80 fl oz'), findsOneWidget);
 
-    await tester.tap(find.byTooltip('Remove water'));
-    await tester.pumpAndSettle();
+    await _tapVisible(tester, find.byTooltip('Remove water'));
     await tester.enterText(find.byType(TextField).first, '8');
     await tester.tap(find.text('Save'));
     await tester.pumpAndSettle();
     expect(find.text('0 / 80 fl oz'), findsOneWidget);
 
-    final addMedicineButton = find.byTooltip('Add medication or supplement');
-    await tester.drag(find.byType(ListView), const Offset(0, -400));
-    await tester.pumpAndSettle();
-    await tester.tap(addMedicineButton);
-    await tester.pumpAndSettle();
+    await _tapVisible(tester, find.byTooltip('Add medication or supplement'));
     await tester.enterText(find.byType(TextField).first, 'Vitamin D');
     await tester.tap(find.byType(DropdownButtonFormField<int>));
     await tester.pumpAndSettle();
@@ -211,9 +245,7 @@ void main() {
     expect(module.medicines.single.firstDoseMinute, 0);
     expect(module.medicines.single.intervalHours, 12);
 
-    await tester.ensureVisible(find.byType(Checkbox).first);
-    await tester.tap(find.byType(Checkbox).first);
-    await tester.pumpAndSettle();
+    await _tapVisible(tester, find.byType(Checkbox).first);
     expect(tester.widget<Checkbox>(find.byType(Checkbox)).value, isTrue);
 
     await tasks.ready;
@@ -234,5 +266,147 @@ void main() {
     );
     await tester.pumpAndSettle();
     expect(find.text('No tasks or reminders yet!'), findsOneWidget);
+  });
+
+  testWidgets('summary card shows live health numbers', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    final module = HealthModule(userId: 'summary-user');
+    await module.ready;
+    await module.addWater(16);
+    await module.addWeight(150, 'lb');
+    await module.addMedicine(
+      name: 'Vitamin D',
+      firstDoseHour: 8,
+      firstDoseMinute: 0,
+      intervalHours: 24,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: Builder(builder: module.buildSummaryCard)),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(
+      find.text('16/64 fl oz water · 150 lb · 0/1 meds taken'),
+      findsOneWidget,
+    );
+
+    await module.toggleMedicine(module.medicines.single, true);
+    await tester.pumpAndSettle();
+    expect(
+      find.text('16/64 fl oz water · 150 lb · 1/1 meds taken'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('quick-add chips fill the water goal and start a streak', (
+    tester,
+  ) async {
+    _usePhoneScreen(tester);
+    SharedPreferences.setMockInitialValues({});
+    final module = HealthModule(userId: 'quick-water-user');
+    await tester.pumpWidget(
+      MaterialApp(home: Builder(builder: module.buildDetailView)),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('0 / 64 fl oz'), findsOneWidget);
+    expect(find.text('Hit your goal to start a streak'), findsOneWidget);
+
+    await _tapVisible(tester, find.text('+24 oz'));
+    await _tapVisible(tester, find.text('+24 oz'));
+    expect(find.text('48 / 64 fl oz'), findsOneWidget);
+    expect(find.text('16 fl oz to go'), findsOneWidget);
+
+    await _tapVisible(tester, find.text('+16 oz'));
+    expect(find.text('64 / 64 fl oz'), findsOneWidget);
+    expect(find.text('Goal reached!'), findsOneWidget);
+    expect(find.text('1 day streak'), findsOneWidget);
+    expect(module.waterTodayOz, 64);
+  });
+
+  testWidgets('weight range selector filters the chart and stats', (
+    tester,
+  ) async {
+    _usePhoneScreen(tester);
+    final now = DateTime.now();
+    SharedPreferences.setMockInitialValues({
+      'health.range-user.weights': [
+        jsonEncode({
+          'id': 'old',
+          'kilograms': 80.0,
+          'recordedAt': now.subtract(const Duration(days: 100)).toIso8601String(),
+        }),
+        jsonEncode({
+          'id': 'new',
+          'kilograms': 75.0,
+          'recordedAt': now.toIso8601String(),
+        }),
+      ],
+    });
+    final module = HealthModule(userId: 'range-user');
+    await tester.pumpWidget(
+      MaterialApp(home: Builder(builder: module.buildDetailView)),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('2 entries'), findsOneWidget);
+    expect(find.text('-11 lb'), findsOneWidget);
+    expect(
+      tester
+          .widget<LineChart>(find.byType(LineChart))
+          .data
+          .lineBarsData
+          .single
+          .spots,
+      hasLength(2),
+    );
+
+    await tester.tap(find.text('7D'));
+    await tester.pumpAndSettle();
+    expect(find.text('1 entry'), findsOneWidget);
+    expect(find.text('—'), findsOneWidget);
+    expect(
+      tester
+          .widget<LineChart>(find.byType(LineChart))
+          .data
+          .lineBarsData
+          .single
+          .spots,
+      hasLength(1),
+    );
+  });
+
+  testWidgets('removing a medicine asks for confirmation first', (
+    tester,
+  ) async {
+    _usePhoneScreen(tester);
+    SharedPreferences.setMockInitialValues({});
+    final module = HealthModule(userId: 'remove-medicine-user');
+    await module.ready;
+    await module.addMedicine(
+      name: 'Vitamin D',
+      firstDoseHour: 8,
+      firstDoseMinute: 0,
+      intervalHours: 24,
+    );
+    await tester.pumpWidget(
+      MaterialApp(home: Builder(builder: module.buildDetailView)),
+    );
+    await tester.pumpAndSettle();
+
+    await _tapVisible(tester, find.byTooltip('Remove item'));
+    expect(find.text('Remove Vitamin D?'), findsOneWidget);
+    await tester.tap(find.widgetWithText(TextButton, 'Cancel'));
+    await tester.pumpAndSettle();
+    expect(module.medicines, hasLength(1));
+    expect(find.text('Vitamin D'), findsOneWidget);
+
+    await _tapVisible(tester, find.byTooltip('Remove item'));
+    await tester.tap(find.widgetWithText(FilledButton, 'Remove'));
+    await tester.pumpAndSettle();
+    expect(module.medicines, isEmpty);
+    expect(find.text('Vitamin D'), findsNothing);
   });
 }
