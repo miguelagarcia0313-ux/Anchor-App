@@ -1,17 +1,23 @@
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:flutter/cupertino.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:fl_chart/fl_chart.dart';
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../shared/anchor_module.dart';
 import '../../shared/module_bottom_sheet.dart';
 import '../../shared/user_cloud_sync.dart';
+
+int _idSequence = 0;
+
+/// Unique even when two entries are created within the same microsecond.
+String _newHealthId() =>
+    '${DateTime.now().microsecondsSinceEpoch}-${_idSequence++}';
 
 class WeightEntry {
   WeightEntry({
@@ -133,15 +139,51 @@ class HealthModule implements AnchorModule {
 
   Map<String, double> get waterHistory => Map.unmodifiable(_waterHistory);
 
+  /// Live summary for the dashboard. Reading [ready] here also makes sure the
+  /// module's data (and its medication reminders) load as soon as the card
+  /// is shown, not only after the Health screen is opened.
   @override
-  Widget buildSummaryCard(BuildContext context) => const Card(
-    child: ListTile(
-      leading: Icon(Icons.monitor_heart_outlined),
-      title: Text('Health'),
-      subtitle: Text('Weight, water, medications, and supplements'),
-      trailing: Icon(Icons.chevron_right),
-    ),
-  );
+  Widget buildSummaryCard(BuildContext context) {
+    return FutureBuilder<void>(
+      future: ready,
+      builder: (context, snapshot) {
+        return ValueListenableBuilder<int>(
+          valueListenable: revision,
+          builder: (context, revisionValue, child) {
+            final loaded = snapshot.connectionState == ConnectionState.done;
+            return Card(
+              child: ListTile(
+                leading: const Icon(Icons.monitor_heart_outlined),
+                title: const Text('Health'),
+                subtitle: Text(
+                  loaded
+                      ? _summaryText()
+                      : 'Weight, water, medications, and supplements',
+                ),
+                trailing: const Icon(Icons.chevron_right),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  String _summaryText() {
+    final parts = <String>[
+      '${_formatNumber(waterTodayOz)}/${_formatNumber(waterGoalOz)} fl oz water',
+    ];
+    final sortedWeights = weights;
+    if (sortedWeights.isNotEmpty) {
+      final latest = _weightValue(sortedWeights.last.kilograms, weightUnit);
+      parts.add('${_formatNumber(latest)} $weightUnit');
+    }
+    if (_medicines.isNotEmpty) {
+      final taken = _medicines.where((medicine) => medicine.isTaken).length;
+      parts.add('$taken/${_medicines.length} meds taken');
+    }
+    return parts.join(' · ');
+  }
 
   @override
   Widget buildDetailView(BuildContext context) =>
@@ -149,7 +191,7 @@ class HealthModule implements AnchorModule {
 
   Future<void> addWeight(double value, String unit) async {
     final entry = WeightEntry(
-      id: DateTime.now().microsecondsSinceEpoch.toString(),
+      id: _newHealthId(),
       kilograms: unit == 'lb' ? value / 2.2046226218 : value,
       recordedAt: DateTime.now(),
     );
@@ -175,6 +217,15 @@ class HealthModule implements AnchorModule {
     _notifyChanged();
     await _saveWeights();
     await _cloud?.records('health', 'weights').doc(entry.id).delete();
+  }
+
+  /// Puts back an entry removed by [deleteWeight] (used by "Undo").
+  Future<void> restoreWeight(WeightEntry entry) async {
+    if (_weights.any((existing) => existing.id == entry.id)) return;
+    _weights.add(entry);
+    _notifyChanged();
+    await _saveWeights();
+    await _cloud?.records('health', 'weights').doc(entry.id).set(entry.toMap());
   }
 
   Future<void> setWaterGoal(double ounces) async {
@@ -228,7 +279,7 @@ class HealthModule implements AnchorModule {
     required int intervalHours,
   }) async {
     final medicine = MedicineEntry(
-      id: DateTime.now().microsecondsSinceEpoch.toString(),
+      id: _newHealthId(),
       name: name,
       firstDoseHour: firstDoseHour,
       firstDoseMinute: firstDoseMinute,
@@ -612,7 +663,12 @@ class _HealthDetailView extends StatefulWidget {
 }
 
 class _HealthDetailViewState extends State<_HealthDetailView> {
+  static const _quickWaterAmounts = [8, 12, 16, 24];
+
   Timer? _dailyResetTimer;
+
+  /// How far back the weight card looks. 0 means all entries.
+  int _weightRangeDays = 0;
 
   @override
   void initState() {
@@ -641,6 +697,8 @@ class _HealthDetailViewState extends State<_HealthDetailView> {
     });
   }
 
+  // ---------------------------------------------------------------- weight
+
   Future<void> _addWeight() async {
     final result = await showModalBottomSheet<_WeightDraft>(
       context: context,
@@ -651,7 +709,11 @@ class _HealthDetailViewState extends State<_HealthDetailView> {
     );
     if (result != null) {
       await widget.module.addWeight(result.value, result.unit);
-      setState(() {});
+      // Show the weight in the unit it was entered in.
+      if (result.unit != widget.module.weightUnit) {
+        await widget.module.setWeightUnit(result.unit);
+      }
+      if (mounted) setState(() {});
     }
   }
 
@@ -667,11 +729,38 @@ class _HealthDetailViewState extends State<_HealthDetailView> {
     );
     if (result != null) {
       await widget.module.updateWeight(entry, result.value, result.unit);
-      setState(() {});
+      if (result.unit != widget.module.weightUnit) {
+        await widget.module.setWeightUnit(result.unit);
+      }
+      if (mounted) setState(() {});
     }
   }
 
+  Future<void> _deleteWeightWithUndo(WeightEntry entry) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final unit = widget.module.weightUnit;
+    final label =
+        '${_formatNumber(_weightValue(entry.kilograms, unit))} $unit';
+    await widget.module.deleteWeight(entry);
+    if (!mounted) return;
+    setState(() {});
+    messenger
+      ..clearSnackBars()
+      ..showSnackBar(
+        SnackBar(
+          behavior: SnackBarBehavior.floating,
+          content: Text('Deleted $label'),
+          action: SnackBarAction(
+            label: 'Undo',
+            onPressed: () => unawaited(widget.module.restoreWeight(entry)),
+          ),
+        ),
+      );
+  }
+
   Future<void> _showWeightHistory() async {
+    final entries = widget.module.weights.reversed.toList();
+    final unit = widget.module.weightUnit;
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -687,18 +776,18 @@ class _HealthDetailViewState extends State<_HealthDetailView> {
         ),
         child: SizedBox(
           width: 420,
-          child: widget.module.weights.isEmpty
+          child: entries.isEmpty
               ? const Text('No weights recorded.')
               : ListView.builder(
                   shrinkWrap: true,
-                  itemCount: widget.module.weights.length,
+                  itemCount: entries.length,
                   itemBuilder: (context, index) {
-                    final entry = widget.module.weights[index];
+                    final entry = entries[index];
                     return ListTile(
                       contentPadding: EdgeInsets.zero,
                       title: Text(
-                        '${_formatNumber(_weightValue(entry.kilograms, widget.module.weightUnit))} '
-                        '${widget.module.weightUnit}',
+                        '${_formatNumber(_weightValue(entry.kilograms, unit))} '
+                        '$unit',
                       ),
                       subtitle: Text(_formatDate(entry.recordedAt)),
                       trailing: Wrap(
@@ -714,11 +803,8 @@ class _HealthDetailViewState extends State<_HealthDetailView> {
                           IconButton(
                             tooltip: 'Delete weight',
                             onPressed: () async {
-                              await widget.module.deleteWeight(entry);
-                              if (mounted) setState(() {});
-                              if (dialogContext.mounted) {
-                                Navigator.pop(dialogContext);
-                              }
+                              Navigator.pop(dialogContext);
+                              await _deleteWeightWithUndo(entry);
                             },
                             icon: const Icon(Icons.delete_outline),
                           ),
@@ -732,6 +818,13 @@ class _HealthDetailViewState extends State<_HealthDetailView> {
     );
   }
 
+  // ----------------------------------------------------------------- water
+
+  Future<void> _quickAddWater(double ounces) async {
+    await widget.module.addWater(ounces);
+    if (mounted) setState(() {});
+  }
+
   Future<void> _addWater() async {
     final amount = await _numberDialog(
       title: 'Add water',
@@ -740,7 +833,7 @@ class _HealthDetailViewState extends State<_HealthDetailView> {
     );
     if (amount != null && amount > 0) {
       await widget.module.addWater(amount);
-      setState(() {});
+      if (mounted) setState(() {});
     }
   }
 
@@ -752,7 +845,7 @@ class _HealthDetailViewState extends State<_HealthDetailView> {
     );
     if (amount != null && amount > 0) {
       await widget.module.removeWater(amount);
-      setState(() {});
+      if (mounted) setState(() {});
     }
   }
 
@@ -764,13 +857,14 @@ class _HealthDetailViewState extends State<_HealthDetailView> {
     );
     if (goal != null && goal > 0) {
       await widget.module.setWaterGoal(goal);
-      setState(() {});
+      if (mounted) setState(() {});
     }
   }
 
   Future<void> _showWaterHistory() async {
     final history = Map<String, double>.from(widget.module.waterHistory);
     history.putIfAbsent(_dateKey(DateTime.now()), () => 0);
+    final goal = widget.module.waterGoalOz;
     final days = history.entries.toList()
       ..sort((first, second) => second.key.compareTo(first.key));
 
@@ -795,8 +889,13 @@ class _HealthDetailViewState extends State<_HealthDetailView> {
             separatorBuilder: (context, index) => const Divider(height: 1),
             itemBuilder: (context, index) {
               final day = days[index];
+              final metGoal = goal > 0 && day.value >= goal;
               return ListTile(
                 contentPadding: EdgeInsets.zero,
+                leading: Icon(
+                  metGoal ? Icons.check_circle : Icons.circle_outlined,
+                  color: metGoal ? Theme.of(context).colorScheme.primary : null,
+                ),
                 title: Text(_formatDate(DateTime.parse(day.key))),
                 trailing: Text('${_formatNumber(day.value)} fl oz'),
               );
@@ -806,6 +905,8 @@ class _HealthDetailViewState extends State<_HealthDetailView> {
       ),
     );
   }
+
+  // -------------------------------------------------------------- medicine
 
   Future<void> _addMedicine() async {
     final draft = await showModalBottomSheet<_MedicineDraft>(
@@ -821,7 +922,34 @@ class _HealthDetailViewState extends State<_HealthDetailView> {
         firstDoseMinute: draft.firstDoseTime.minute,
         intervalHours: draft.intervalHours,
       );
-      setState(() {});
+      if (mounted) setState(() {});
+    }
+  }
+
+  Future<void> _confirmRemoveMedicine(MedicineEntry medicine) async {
+    final shouldRemove = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Remove ${medicine.name}?'),
+        content: const Text(
+          'This removes it from your daily checklist and deletes its '
+          'reminders in Tasks & Reminders.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Remove'),
+          ),
+        ],
+      ),
+    );
+    if (shouldRemove == true) {
+      await widget.module.deleteMedicine(medicine);
+      if (mounted) setState(() {});
     }
   }
 
@@ -842,6 +970,8 @@ class _HealthDetailViewState extends State<_HealthDetailView> {
     );
   }
 
+  // ----------------------------------------------------------------- build
+
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
@@ -855,7 +985,7 @@ class _HealthDetailViewState extends State<_HealthDetailView> {
               return const Center(child: CircularProgressIndicator());
             }
             return ListView(
-              padding: const EdgeInsets.all(16),
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
               children: [
                 _weightSection(context),
                 const SizedBox(height: 12),
@@ -871,11 +1001,20 @@ class _HealthDetailViewState extends State<_HealthDetailView> {
   }
 
   Widget _weightSection(BuildContext context) {
-    final entries = widget.module.weights;
-    final oldest = entries.isEmpty ? null : entries.first;
-    final latest = entries.isEmpty ? null : entries.last;
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final unit = widget.module.weightUnit;
+    final allEntries = widget.module.weights;
+    final cutoff = _weightRangeDays == 0
+        ? null
+        : DateTime.now().subtract(Duration(days: _weightRangeDays));
+    final entries = cutoff == null
+        ? allEntries
+        : allEntries
+              .where((entry) => !entry.recordedAt.isBefore(cutoff))
+              .toList();
     final chartWeights = entries
-        .map((entry) => _weightValue(entry.kilograms, widget.module.weightUnit))
+        .map((entry) => _weightValue(entry.kilograms, unit))
         .toList();
     final lowestWeight = chartWeights.isEmpty
         ? 0.0
@@ -891,296 +1030,584 @@ class _HealthDetailViewState extends State<_HealthDetailView> {
     final singleWeightPadding = (lowestWeight.abs() * 0.01)
         .clamp(0.5, 1.0)
         .toDouble();
+    final latest = chartWeights.isEmpty ? null : chartWeights.last;
+    final change = chartWeights.length < 2
+        ? null
+        : chartWeights.last - chartWeights.first;
+    final average = chartWeights.isEmpty
+        ? null
+        : chartWeights.reduce((first, second) => first + second) /
+              chartWeights.length;
+    final rangeLabel = _weightRangeDays == 0
+        ? 'all time'
+        : 'last $_weightRangeDays days';
 
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    'Weight',
-                    style: Theme.of(context).textTheme.titleLarge,
-                  ),
-                ),
-                IconButton(
-                  onPressed: _showWeightHistory,
-                  tooltip: 'Edit weight history',
-                  icon: const Icon(Icons.edit_outlined),
-                ),
-                IconButton(
-                  onPressed: _addWeight,
-                  tooltip: 'Add weight',
-                  icon: const Icon(Icons.add),
-                ),
-              ],
-            ),
-            Align(
-              alignment: Alignment.centerRight,
-              child: Tooltip(
-                message: 'Weight unit',
-                child: DropdownButton<String>(
-                  value: widget.module.weightUnit,
-                  items: const [
-                    DropdownMenuItem(value: 'lb', child: Text('lb')),
-                    DropdownMenuItem(value: 'kg', child: Text('kg')),
+    return _SectionCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _SectionHeader(
+            icon: Icons.monitor_weight_outlined,
+            title: 'Weight',
+            actions: [
+              IconButton(
+                onPressed: _showWeightHistory,
+                tooltip: 'Edit weight history',
+                icon: const Icon(Icons.history),
+              ),
+              IconButton(
+                onPressed: _addWeight,
+                tooltip: 'Add weight',
+                icon: const Icon(Icons.add),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 12,
+            runSpacing: 8,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              if (allEntries.length > 1)
+                SegmentedButton<int>(
+                  segments: const [
+                    ButtonSegment(value: 7, label: Text('7D')),
+                    ButtonSegment(value: 30, label: Text('30D')),
+                    ButtonSegment(value: 90, label: Text('90D')),
+                    ButtonSegment(value: 0, label: Text('All')),
                   ],
-                  onChanged: (unit) {
-                    if (unit != null) widget.module.setWeightUnit(unit);
-                  },
+                  selected: {_weightRangeDays},
+                  showSelectedIcon: false,
+                  style: const ButtonStyle(visualDensity: VisualDensity.compact),
+                  onSelectionChanged: (selection) =>
+                      setState(() => _weightRangeDays = selection.first),
                 ),
-              ),
-            ),
-            if (entries.isEmpty)
-              const Padding(
-                padding: EdgeInsets.symmetric(vertical: 24),
-                child: Center(child: Text('Add a weight to start your graph.')),
-              )
-            else ...[
-              Row(
-                children: [
-                  Expanded(
-                    child: _EndpointWeight(
-                      label: 'Oldest',
-                      entry: oldest!,
-                      unit: widget.module.weightUnit,
-                    ),
-                  ),
-                  const SizedBox(width: 16),
-                  Expanded(
-                    child: _EndpointWeight(
-                      label: 'Latest',
-                      entry: latest!,
-                      unit: widget.module.weightUnit,
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 16),
-              SizedBox(
-                height: (MediaQuery.sizeOf(context).width * 0.42)
-                    .clamp(145.0, 210.0)
-                    .toDouble(),
-                child: LineChart(
-                  LineChartData(
-                    minX: 0,
-                    maxX: entries.length > 1
-                        ? (entries.length - 1).toDouble()
-                        : 1.0,
-                    minY: hasWeightRange
-                        ? lowestWeight
-                        : lowestWeight - singleWeightPadding,
-                    maxY: hasWeightRange
-                        ? highestWeight
-                        : highestWeight + singleWeightPadding,
-                    gridData: const FlGridData(
-                      show: true,
-                      drawVerticalLine: false,
-                    ),
-                    borderData: FlBorderData(show: false),
-                    titlesData: const FlTitlesData(
-                      topTitles: AxisTitles(
-                        sideTitles: SideTitles(showTitles: false),
-                      ),
-                      rightTitles: AxisTitles(
-                        sideTitles: SideTitles(showTitles: false),
-                      ),
-                      bottomTitles: AxisTitles(
-                        sideTitles: SideTitles(showTitles: false),
-                      ),
-                    ),
-                    lineTouchData: LineTouchData(
-                      touchTooltipData: LineTouchTooltipData(
-                        getTooltipColor: (_) =>
-                            Theme.of(context).colorScheme.inverseSurface,
-                        getTooltipItems: (spots) => spots
-                            .map(
-                              (spot) => LineTooltipItem(
-                                '${_formatNumber(spot.y)} ${widget.module.weightUnit}',
-                                TextStyle(
-                                  color: Theme.of(context)
-                                      .colorScheme
-                                      .onInverseSurface,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                            )
-                            .toList(),
-                      ),
-                    ),
-                    lineBarsData: [
-                      LineChartBarData(
-                        spots: entries
-                            .asMap()
-                            .entries
-                            .map(
-                              (entry) => FlSpot(
-                                entry.key.toDouble(),
-                                _weightValue(
-                                  entry.value.kilograms,
-                                  widget.module.weightUnit,
-                                ),
-                              ),
-                            )
-                            .toList(),
-                        isCurved: true,
-                        color: Theme.of(context).colorScheme.primary,
-                        barWidth: 3,
-                        dotData: const FlDotData(show: true),
-                      ),
-                    ],
-                  ),
+              Tooltip(
+                message: 'Weight unit',
+                child: SegmentedButton<String>(
+                  segments: const [
+                    ButtonSegment(value: 'lb', label: Text('lb')),
+                    ButtonSegment(value: 'kg', label: Text('kg')),
+                  ],
+                  selected: {unit},
+                  showSelectedIcon: false,
+                  style: const ButtonStyle(visualDensity: VisualDensity.compact),
+                  onSelectionChanged: (selection) =>
+                      unawaited(widget.module.setWeightUnit(selection.first)),
                 ),
               ),
             ],
+          ),
+          const SizedBox(height: 12),
+          if (allEntries.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 24),
+              child: Center(child: Text('Add a weight to start your graph.')),
+            )
+          else if (entries.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 24),
+              child: Center(child: Text('No weigh-ins in this range.')),
+            )
+          else ...[
+            Row(
+              children: [
+                Expanded(
+                  child: _StatTile(
+                    label: 'Latest',
+                    value: '${_formatNumber(latest!)} $unit',
+                    caption: _formatDate(entries.last.recordedAt),
+                  ),
+                ),
+                Expanded(
+                  child: _StatTile(
+                    label: 'Change',
+                    value: change == null
+                        ? '—'
+                        : '${_formatDelta(change)} $unit',
+                    caption: rangeLabel,
+                  ),
+                ),
+                Expanded(
+                  child: _StatTile(
+                    label: 'Average',
+                    value: '${_formatNumber(average!)} $unit',
+                    caption:
+                        '${entries.length} '
+                        '${entries.length == 1 ? 'entry' : 'entries'}',
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            SizedBox(
+              height: (MediaQuery.sizeOf(context).width * 0.42)
+                  .clamp(145.0, 210.0)
+                  .toDouble(),
+              child: LineChart(
+                LineChartData(
+                  minX: 0,
+                  maxX: entries.length > 1
+                      ? (entries.length - 1).toDouble()
+                      : 1.0,
+                  minY: hasWeightRange
+                      ? lowestWeight
+                      : lowestWeight - singleWeightPadding,
+                  maxY: hasWeightRange
+                      ? highestWeight
+                      : highestWeight + singleWeightPadding,
+                  gridData: const FlGridData(
+                    show: true,
+                    drawVerticalLine: false,
+                  ),
+                  borderData: FlBorderData(show: false),
+                  titlesData: const FlTitlesData(
+                    topTitles: AxisTitles(
+                      sideTitles: SideTitles(showTitles: false),
+                    ),
+                    rightTitles: AxisTitles(
+                      sideTitles: SideTitles(showTitles: false),
+                    ),
+                    bottomTitles: AxisTitles(
+                      sideTitles: SideTitles(showTitles: false),
+                    ),
+                  ),
+                  lineTouchData: LineTouchData(
+                    touchTooltipData: LineTouchTooltipData(
+                      getTooltipColor: (_) => scheme.inverseSurface,
+                      getTooltipItems: (spots) => spots
+                          .map(
+                            (spot) => LineTooltipItem(
+                              '${_formatNumber(spot.y)} $unit',
+                              TextStyle(
+                                color: scheme.onInverseSurface,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          )
+                          .toList(),
+                    ),
+                  ),
+                  lineBarsData: [
+                    LineChartBarData(
+                      spots: [
+                        for (var index = 0; index < chartWeights.length; index++)
+                          FlSpot(index.toDouble(), chartWeights[index]),
+                      ],
+                      isCurved: true,
+                      color: scheme.primary,
+                      barWidth: 3,
+                      dotData: const FlDotData(show: true),
+                      belowBarData: BarAreaData(
+                        show: true,
+                        color: scheme.primary.withValues(alpha: 0.12),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            if (entries.length > 1)
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      _formatDate(entries.first.recordedAt),
+                      style: theme.textTheme.labelSmall,
+                    ),
+                    Text(
+                      _formatDate(entries.last.recordedAt),
+                      style: theme.textTheme.labelSmall,
+                    ),
+                  ],
+                ),
+              ),
           ],
-        ),
+        ],
       ),
     );
   }
 
   Widget _waterSection(BuildContext context) {
-    final progress = widget.module.waterGoalOz <= 0
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final goal = widget.module.waterGoalOz;
+    final today = widget.module.waterTodayOz;
+    final progress = goal <= 0
         ? 0.0
-        : (widget.module.waterTodayOz / widget.module.waterGoalOz)
-              .clamp(0.0, 1.0)
-              .toDouble();
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    'Water',
-                    style: Theme.of(context).textTheme.titleLarge,
-                  ),
+        : (today / goal).clamp(0.0, 1.0).toDouble();
+    final streak = _waterStreak(widget.module.waterHistory, goal);
+
+    return _SectionCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _SectionHeader(
+            icon: Icons.water_drop_outlined,
+            title: 'Water',
+            actions: [
+              IconButton(
+                onPressed: _showWaterHistory,
+                tooltip: 'Water history',
+                icon: const Icon(Icons.history),
+              ),
+              IconButton(
+                onPressed: _editWaterGoal,
+                tooltip: 'Set water goal',
+                icon: const Icon(Icons.flag_outlined),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              SizedBox(
+                width: 96,
+                height: 96,
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    SizedBox.expand(
+                      child: CircularProgressIndicator(
+                        value: progress,
+                        strokeWidth: 10,
+                        strokeCap: StrokeCap.round,
+                        backgroundColor: scheme.surfaceContainerHighest,
+                      ),
+                    ),
+                    Text(
+                      '${(progress * 100).round()}%',
+                      style: theme.textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ],
                 ),
-                IconButton(
-                  onPressed: _showWaterHistory,
-                  tooltip: 'Water history',
-                  icon: const Icon(Icons.history),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '${_formatNumber(today)} / ${_formatNumber(goal)} fl oz',
+                      style: theme.textTheme.titleMedium,
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      goal > 0 && today >= goal
+                          ? 'Goal reached!'
+                          : '${_formatNumber((goal - today).clamp(0.0, double.infinity).toDouble())} '
+                                'fl oz to go',
+                      style: theme.textTheme.bodyMedium?.copyWith(
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Icon(
+                          Icons.local_fire_department_outlined,
+                          size: 18,
+                          color: streak > 0
+                              ? scheme.primary
+                              : scheme.onSurfaceVariant,
+                        ),
+                        const SizedBox(width: 4),
+                        Expanded(
+                          child: Text(
+                            streak > 0
+                                ? '$streak day streak'
+                                : 'Hit your goal to start a streak',
+                            style: theme.textTheme.labelMedium?.copyWith(
+                              color: scheme.onSurfaceVariant,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
                 ),
-                IconButton(
-                  onPressed: _editWaterGoal,
-                  tooltip: 'Set water goal',
-                  icon: const Icon(Icons.flag_outlined),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              for (final ounces in _quickWaterAmounts)
+                ActionChip(
+                  label: Text('+$ounces oz'),
+                  onPressed: () => _quickAddWater(ounces.toDouble()),
                 ),
-                IconButton(
-                  onPressed: _addWater,
-                  tooltip: 'Add water',
-                  icon: const Icon(Icons.add),
-                ),
-                IconButton(
-                  onPressed: widget.module.waterTodayOz > 0
-                      ? _removeWater
-                      : null,
-                  tooltip: 'Remove water',
-                  icon: const Icon(Icons.remove),
-                ),
-              ],
+              ActionChip(
+                avatar: const Icon(Icons.edit_outlined, size: 18),
+                label: const Text('Custom'),
+                tooltip: 'Add water',
+                onPressed: _addWater,
+              ),
+              ActionChip(
+                avatar: const Icon(Icons.remove, size: 18),
+                label: const Text('Remove'),
+                tooltip: 'Remove water',
+                onPressed: today > 0 ? _removeWater : null,
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Text(
+            'Last 7 days',
+            style: theme.textTheme.labelMedium?.copyWith(
+              color: scheme.onSurfaceVariant,
             ),
-            Text(
-              '${_formatNumber(widget.module.waterTodayOz)} / '
-              '${_formatNumber(widget.module.waterGoalOz)} fl oz',
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
-            const SizedBox(height: 12),
-            LinearProgressIndicator(value: progress, minHeight: 8),
-          ],
-        ),
+          ),
+          const SizedBox(height: 8),
+          _WaterWeek(history: widget.module.waterHistory, goal: goal),
+        ],
       ),
     );
   }
 
   Widget _medicineSection(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
     final medicines = widget.module.medicines;
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    'Medications & Supplements',
-                    style: Theme.of(context).textTheme.titleLarge,
-                  ),
-                ),
-                IconButton(
-                  onPressed: _addMedicine,
-                  tooltip: 'Add medication or supplement',
-                  icon: const Icon(Icons.add),
-                ),
-              ],
+    final taken = medicines.where((medicine) => medicine.isTaken).length;
+
+    return _SectionCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _SectionHeader(
+            icon: Icons.medication_outlined,
+            title: 'Medications & Supplements',
+            actions: [
+              IconButton(
+                onPressed: _addMedicine,
+                tooltip: 'Add medication or supplement',
+                icon: const Icon(Icons.add),
+              ),
+            ],
+          ),
+          if (medicines.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 8),
+              child: Text(
+                'Add medications, vitamins, or supplements to your daily '
+                'checklist.',
+              ),
+            )
+          else ...[
+            const SizedBox(height: 4),
+            Text(
+              '$taken of ${medicines.length} taken today',
+              style: theme.textTheme.labelMedium?.copyWith(
+                color: scheme.onSurfaceVariant,
+              ),
             ),
-            if (medicines.isEmpty)
-              const Padding(
-                padding: EdgeInsets.symmetric(vertical: 8),
-                child: Text(
-                  'Add medications, vitamins, or supplements to your daily checklist.',
-                ),
-              )
-            else
-              ...medicines.map(
-                (medicine) => CheckboxListTile(
-                  contentPadding: EdgeInsets.zero,
-                  title: Text(medicine.name),
-                  value: medicine.isTaken,
-                  onChanged: (checked) async {
-                    await widget.module.toggleMedicine(
-                      medicine,
-                      checked ?? false,
-                    );
-                  },
-                  secondary: IconButton(
-                    tooltip: 'Remove item',
-                    onPressed: () async {
-                      await widget.module.deleteMedicine(medicine);
-                    },
-                    icon: const Icon(Icons.close),
+            const SizedBox(height: 6),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(999),
+              child: LinearProgressIndicator(
+                value: taken / medicines.length,
+                minHeight: 6,
+              ),
+            ),
+            const SizedBox(height: 4),
+            ...medicines.map(
+              (medicine) => CheckboxListTile(
+                contentPadding: EdgeInsets.zero,
+                controlAffinity: ListTileControlAffinity.leading,
+                title: Text(
+                  medicine.name,
+                  style: TextStyle(
+                    decoration: medicine.isTaken
+                        ? TextDecoration.lineThrough
+                        : null,
                   ),
+                ),
+                subtitle: Text(_scheduleLabel(context, medicine)),
+                value: medicine.isTaken,
+                onChanged: (checked) async {
+                  await widget.module.toggleMedicine(medicine, checked ?? false);
+                },
+                secondary: IconButton(
+                  tooltip: 'Remove item',
+                  onPressed: () => _confirmRemoveMedicine(medicine),
+                  icon: const Icon(Icons.close),
                 ),
               ),
+            ),
           ],
-        ),
+        ],
       ),
     );
   }
 }
 
-class _EndpointWeight extends StatelessWidget {
-  const _EndpointWeight({
+// ------------------------------------------------------------ shared widgets
+
+class _SectionCard extends StatelessWidget {
+  const _SectionCard({required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      elevation: 0,
+      margin: EdgeInsets.zero,
+      color: Theme.of(context).colorScheme.surfaceContainerLow,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      child: Padding(padding: const EdgeInsets.all(16), child: child),
+    );
+  }
+}
+
+class _SectionHeader extends StatelessWidget {
+  const _SectionHeader({
+    required this.icon,
+    required this.title,
+    this.actions = const [],
+  });
+
+  final IconData icon;
+  final String title;
+  final List<Widget> actions;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Row(
+      children: [
+        Icon(icon, color: theme.colorScheme.primary),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text(
+            title,
+            style: theme.textTheme.titleMedium?.copyWith(
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ),
+        ...actions,
+      ],
+    );
+  }
+}
+
+class _StatTile extends StatelessWidget {
+  const _StatTile({
     required this.label,
-    required this.entry,
-    required this.unit,
+    required this.value,
+    required this.caption,
   });
 
   final String label;
-  final WeightEntry entry;
-  final String unit;
+  final String value;
+  final String caption;
 
   @override
-  Widget build(BuildContext context) => Column(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: [
-      Text(label, style: Theme.of(context).textTheme.labelMedium),
-      Text(
-        '${_formatNumber(_weightValue(entry.kilograms, unit))} $unit',
-        style: Theme.of(context).textTheme.titleMedium,
-      ),
-      Text(_formatDate(entry.recordedAt)),
-    ],
-  );
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final muted = theme.colorScheme.onSurfaceVariant;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: theme.textTheme.labelMedium?.copyWith(color: muted),
+        ),
+        const SizedBox(height: 2),
+        Text(
+          value,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: theme.textTheme.titleMedium?.copyWith(
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        Text(
+          caption,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: theme.textTheme.bodySmall?.copyWith(color: muted),
+        ),
+      ],
+    );
+  }
 }
+
+/// Seven small bars, one per day, filled relative to the daily water goal.
+class _WaterWeek extends StatelessWidget {
+  const _WaterWeek({required this.history, required this.goal});
+
+  final Map<String, double> history;
+  final double goal;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final now = DateTime.now();
+    final days = List.generate(
+      7,
+      (index) => DateTime(now.year, now.month, now.day - (6 - index)),
+    );
+    const initials = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
+
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.end,
+      children: days.map((day) {
+        final amount = history[_dateKey(day)] ?? 0;
+        final fraction = goal <= 0
+            ? 0.0
+            : (amount / goal).clamp(0.0, 1.0).toDouble();
+        final metGoal = goal > 0 && amount >= goal;
+        final isToday = day.day == now.day && day.month == now.month;
+        return Expanded(
+          child: Tooltip(
+            message: '${_formatDate(day)}: ${_formatNumber(amount)} fl oz',
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                SizedBox(
+                  height: 52,
+                  child: Align(
+                    alignment: Alignment.bottomCenter,
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 300),
+                      width: 16,
+                      height: 6 + 46 * fraction,
+                      decoration: BoxDecoration(
+                        color: metGoal
+                            ? scheme.primary
+                            : scheme.primary.withValues(alpha: 0.35),
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  initials[day.weekday - 1],
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    fontWeight: isToday ? FontWeight.w700 : null,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      }).toList(),
+    );
+  }
+}
+
+// ------------------------------------------------------------------- dialogs
 
 class _WeightDraft {
   const _WeightDraft({required this.value, required this.unit});
@@ -1248,6 +1675,7 @@ class _WeightEditorDialogState extends State<_WeightEditorDialog> {
           controller: _controller,
           autofocus: true,
           keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          onSubmitted: (_) => _save(),
           decoration: InputDecoration(
             labelText: 'Weight',
             suffix: DropdownButton<String>(
@@ -1310,6 +1738,13 @@ class _NumberEntryDialogState extends State<_NumberEntryDialog> {
     super.dispose();
   }
 
+  void _save() {
+    final value = double.tryParse(_controller.text.trim());
+    // Stay open on bad input instead of silently closing.
+    if (value == null || value <= 0) return;
+    Navigator.pop(context, value);
+  }
+
   @override
   Widget build(BuildContext context) => ModuleBottomSheet(
     title: widget.title,
@@ -1321,17 +1756,14 @@ class _NumberEntryDialogState extends State<_NumberEntryDialog> {
           child: const Text('Cancel'),
         ),
         const SizedBox(width: 8),
-        FilledButton(
-          onPressed: () =>
-              Navigator.pop(context, double.tryParse(_controller.text.trim())),
-          child: const Text('Save'),
-        ),
+        FilledButton(onPressed: _save, child: const Text('Save')),
       ],
     ),
     child: TextField(
       controller: _controller,
       autofocus: true,
       keyboardType: const TextInputType.numberWithOptions(decimal: true),
+      onSubmitted: (_) => _save(),
       decoration: InputDecoration(labelText: widget.label),
     ),
   );
@@ -1448,30 +1880,41 @@ class _MedicineEditorDialogState extends State<_MedicineEditorDialog> {
           ),
         ),
         DropdownButtonFormField<int>(
-          initialValue: _intervalHours,
-          decoration: const InputDecoration(labelText: 'Dose frequency'),
-          items: List.generate(
-            24,
-            (index) => DropdownMenuItem(
-              value: index + 1,
-              child: Text('Every ${index + 1} hours'),
-            ),
-          ),
-          onChanged: (hours) {
-            if (hours != null) setState(() => _intervalHours = hours);
-          },
-        ),
+  initialValue: _intervalHours,
+  isExpanded: true,                       // new
+  decoration: const InputDecoration(labelText: 'Dose frequency'),
+  items: List.generate(
+    24,
+    (index) => DropdownMenuItem(
+      value: index + 1,
+      child: Text(
+        index + 1 == 24
+            ? 'Every 24 hours (once daily)'
+            : _intervalLabel(index + 1),
+        maxLines: 1,                      // new
+        overflow: TextOverflow.ellipsis,  // new
+      ),
+    ),
+  ),
+  onChanged: (hours) {
+    if (hours != null) setState(() => _intervalHours = hours);
+  },
+),
         const Align(
           alignment: Alignment.centerLeft,
           child: Padding(
             padding: EdgeInsets.only(top: 4),
-            child: Text('24 hours means once daily.'),
+            child: Text(
+              'Each dose is added to Tasks & Reminders automatically.',
+            ),
           ),
         ),
       ],
     ),
   );
 }
+
+// ------------------------------------------------------------------- helpers
 
 double _weightValue(double kilograms, String unit) =>
     unit == 'lb' ? kilograms * 2.2046226218 : kilograms;
@@ -1483,9 +1926,49 @@ String _formatNumber(double value) {
       : value.toStringAsFixed(1);
 }
 
+/// Signed change, e.g. "+1.5" or "-2". Tiny changes read as "0".
+String _formatDelta(double value) {
+  final rounded = (value * 10).round() / 10;
+  if (rounded == 0) return '0';
+  return '${rounded > 0 ? '+' : ''}${_formatNumber(rounded)}';
+}
+
 String _formatDate(DateTime date) => '${date.month}/${date.day}/${date.year}';
 
 String _dateKey(DateTime date) =>
     '${date.year.toString().padLeft(4, '0')}-'
     '${date.month.toString().padLeft(2, '0')}-'
     '${date.day.toString().padLeft(2, '0')}';
+
+String _intervalLabel(int hours) =>
+    hours == 1 ? 'Every hour' : 'Every $hours hours';
+
+String _scheduleLabel(BuildContext context, MedicineEntry medicine) {
+  final time = MaterialLocalizations.of(context).formatTimeOfDay(
+    TimeOfDay(hour: medicine.firstDoseHour, minute: medicine.firstDoseMinute),
+  );
+  final frequency = medicine.intervalHours == 24
+      ? 'Once daily'
+      : _intervalLabel(medicine.intervalHours);
+  return '$frequency · first dose $time';
+}
+
+/// Consecutive days the goal was met. Today only counts once it is met, but an
+/// unfinished today doesn't break a streak that runs through yesterday.
+int _waterStreak(Map<String, double> history, double goal) {
+  if (goal <= 0) return 0;
+  var day = DateTime.now();
+  var streak = 0;
+  var isToday = true;
+  while (true) {
+    final amount = history[_dateKey(day)] ?? 0;
+    if (amount >= goal) {
+      streak++;
+    } else if (!isToday) {
+      break;
+    }
+    isToday = false;
+    day = DateTime(day.year, day.month, day.day - 1);
+  }
+  return streak;
+}
