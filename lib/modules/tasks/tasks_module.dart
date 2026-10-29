@@ -19,6 +19,39 @@ bool _isDateOnlyDueAt(DateTime date) =>
 String _medicationDoseTaskId(String medicationId, DateTime dueAt) =>
     '$medicationId:${dueAt.toIso8601String()}';
 
+enum _TaskLabelColor { blue, green, red, yellow, purple }
+
+extension on _TaskLabelColor {
+  Color get value => switch (this) {
+    _TaskLabelColor.blue => Colors.blue,
+    _TaskLabelColor.green => Colors.green,
+    _TaskLabelColor.red => Colors.red,
+    _TaskLabelColor.yellow => Colors.yellow,
+    _TaskLabelColor.purple => Colors.purple,
+  };
+}
+
+class _TaskLabel {
+  const _TaskLabel({required this.id, required this.name, required this.color});
+
+  final String id;
+  final String name;
+  final _TaskLabelColor color;
+
+  Map<String, dynamic> toMap() => {'id': id, 'name': name, 'color': color.name};
+
+  factory _TaskLabel.fromMap(Map<String, dynamic> map) {
+    return _TaskLabel(
+      id: map['id'] as String,
+      name: map['name'] as String? ?? '',
+      color: _TaskLabelColor.values.firstWhere(
+        (color) => color.name == map['color'],
+        orElse: () => _TaskLabelColor.blue,
+      ),
+    );
+  }
+}
+
 const _reminderLeadTimeLabels = <int, String>{
   5: '5 minutes before',
   10: '10 minutes before',
@@ -40,6 +73,7 @@ class _TaskEntry {
     this.medicationName,
     this.dueAt,
     this.reminderMinutesBefore,
+    this.labelId,
     this.isComplete = false,
   });
 
@@ -51,6 +85,7 @@ class _TaskEntry {
   String? medicationName;
   DateTime? dueAt;
   int? reminderMinutesBefore;
+  String? labelId;
   bool isComplete;
 
   Map<String, dynamic> toMap() {
@@ -63,6 +98,7 @@ class _TaskEntry {
       'medicationName': medicationName,
       'dueAt': dueAt?.toIso8601String(),
       'reminderMinutesBefore': reminderMinutesBefore,
+      'labelId': labelId,
       'isComplete': isComplete,
     };
   }
@@ -81,6 +117,7 @@ class _TaskEntry {
           ? null
           : DateTime.tryParse(map['dueAt'] as String),
       reminderMinutesBefore: map['reminderMinutesBefore'] as int?,
+      labelId: map['labelId'] as String?,
       isComplete: map['isComplete'] as bool? ?? false,
     );
   }
@@ -93,6 +130,7 @@ class _TaskDraft {
     required this.isReminder,
     this.dueAt,
     this.reminderMinutesBefore,
+    this.labelId,
   });
 
   final String title;
@@ -100,11 +138,12 @@ class _TaskDraft {
   final bool isReminder;
   final DateTime? dueAt;
   final int? reminderMinutesBefore;
+  final String? labelId;
 }
 
 enum _TaskFilter { all, today, upcoming, overdue, noDueDate, completed }
 
-enum _TaskSort { dueSoonest, dueLatest, title }
+enum _TaskSort { dueSoonest, dueLatest, title, label }
 
 class TasksModule implements AnchorModule {
   TasksModule({String? userId})
@@ -188,6 +227,7 @@ class TasksModule implements AnchorModule {
       isReminder: draft.isReminder,
       dueAt: draft.dueAt,
       reminderMinutesBefore: draft.reminderMinutesBefore,
+      labelId: draft.labelId,
     );
     _entries.add(entry);
     _notifyChanged();
@@ -200,9 +240,40 @@ class TasksModule implements AnchorModule {
       ..notes = draft.notes
       ..isReminder = draft.isReminder
       ..dueAt = draft.dueAt
-      ..reminderMinutesBefore = draft.reminderMinutesBefore;
+      ..reminderMinutesBefore = draft.reminderMinutesBefore
+      ..labelId = draft.labelId;
     _notifyChanged();
     await _persistEntries();
+  }
+
+  String get _labelsStorageKey => 'tasks.$userId.labels';
+  final List<_TaskLabel> _labels = [];
+
+  Future<void> _addLabel(String name, _TaskLabelColor color) async {
+    final normalizedName = name.trim();
+    if (normalizedName.isEmpty ||
+        _labels.any(
+          (label) => label.name.toLowerCase() == normalizedName.toLowerCase(),
+        )) {
+      return;
+    }
+    _labels.add(
+      _TaskLabel(
+        id: DateTime.now().microsecondsSinceEpoch.toString(),
+        name: normalizedName,
+        color: color,
+      ),
+    );
+    _notifyChanged();
+    await _persistLabels();
+  }
+
+  _TaskLabel? _labelFor(String? id) {
+    if (id == null) return null;
+    for (final label in _labels) {
+      if (label.id == id) return label;
+    }
+    return null;
   }
 
   Future<void> _deleteEntry(_TaskEntry entry) async {
@@ -305,6 +376,16 @@ class TasksModule implements AnchorModule {
           ),
         ),
       );
+    final storedLabels = preferences.getStringList(_labelsStorageKey) ?? [];
+    _labels
+      ..clear()
+      ..addAll(
+        storedLabels.map(
+          (encodedLabel) => _TaskLabel.fromMap(
+            jsonDecode(encodedLabel) as Map<String, dynamic>,
+          ),
+        ),
+      );
     _notifyChanged();
     final cloud = _cloud;
     if (cloud == null) return;
@@ -313,6 +394,13 @@ class TasksModule implements AnchorModule {
         'tasks',
         'entries',
         _entries.map((entry) => MapEntry(entry.id, entry.toMap())),
+      );
+    });
+    await cloud.migrateLocalDataOnce('tasks_labels', () async {
+      await cloud.setRecords(
+        'tasks',
+        'labels',
+        _labels.map((label) => MapEntry(label.id, label.toMap())),
       );
     });
     cloud
@@ -329,6 +417,25 @@ class TasksModule implements AnchorModule {
               );
             _notifyChanged();
             unawaited(_persistEntriesLocally());
+          },
+          onError: (Object error, StackTrace stackTrace) {
+            cloud.reportStreamError('tasks', error, stackTrace);
+          },
+        );
+    cloud
+        .records('tasks', 'labels')
+        .snapshots()
+        .listen(
+          (snapshot) {
+            _labels
+              ..clear()
+              ..addAll(
+                snapshot.docs.map(
+                  (document) => _TaskLabel.fromMap(document.data()),
+                ),
+              );
+            _notifyChanged();
+            unawaited(_persistLabelsLocally());
           },
           onError: (Object error, StackTrace stackTrace) {
             cloud.reportStreamError('tasks', error, stackTrace);
@@ -352,6 +459,23 @@ class TasksModule implements AnchorModule {
       _entries.map((entry) => jsonEncode(entry.toMap())).toList(),
     );
   }
+
+  Future<void> _persistLabels() async {
+    await _persistLabelsLocally();
+    await _cloud?.replaceRecords(
+      'tasks',
+      'labels',
+      _labels.map((label) => MapEntry(label.id, label.toMap())),
+    );
+  }
+
+  Future<void> _persistLabelsLocally() async {
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setStringList(
+      _labelsStorageKey,
+      _labels.map((label) => jsonEncode(label.toMap())).toList(),
+    );
+  }
 }
 
 class _TasksDetailView extends StatefulWidget {
@@ -366,6 +490,7 @@ class _TasksDetailView extends StatefulWidget {
 class _TasksDetailViewState extends State<_TasksDetailView> {
   _TaskFilter _filter = _TaskFilter.all;
   _TaskSort _sort = _TaskSort.dueSoonest;
+  String? _labelFilterId;
 
   @override
   void initState() {
@@ -386,7 +511,7 @@ class _TasksDetailViewState extends State<_TasksDetailView> {
   Future<void> _createEntry() async {
     final draft = await showDialog<_TaskDraft>(
       context: context,
-      builder: (context) => const _TaskEditorDialog(),
+      builder: (context) => _TaskEditorDialog(labels: widget.module._labels),
     );
     if (draft != null) {
       await widget.module._addEntry(draft);
@@ -397,7 +522,8 @@ class _TasksDetailViewState extends State<_TasksDetailView> {
   Future<void> _editEntry(_TaskEntry entry) async {
     final draft = await showDialog<_TaskDraft>(
       context: context,
-      builder: (context) => _TaskEditorDialog(entry: entry),
+      builder: (context) =>
+          _TaskEditorDialog(entry: entry, labels: widget.module._labels),
     );
     if (draft != null) {
       await widget.module._updateEntry(entry, draft);
@@ -442,7 +568,7 @@ class _TasksDetailViewState extends State<_TasksDetailView> {
         final entries = widget.module._entries;
         if (entries.isEmpty) {
           return Scaffold(
-            appBar: AppBar(title: const Text('Tasks & Reminders')),
+            appBar: _buildAppBar(),
             body: const _EmptyTasksState(),
             floatingActionButton: _AddTaskButton(onPressed: _createEntry),
           );
@@ -450,7 +576,7 @@ class _TasksDetailViewState extends State<_TasksDetailView> {
 
         final filteredEntries = _filteredEntries(entries);
         return Scaffold(
-          appBar: AppBar(title: const Text('Tasks & Reminders')),
+          appBar: _buildAppBar(),
           body: Padding(
             padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
             child: Column(
@@ -459,7 +585,10 @@ class _TasksDetailViewState extends State<_TasksDetailView> {
                 const SizedBox(height: 12),
                 Expanded(
                   child: filteredEntries.isEmpty
-                      ? _NoMatchingTasksState(filter: _filter)
+                      ? _NoMatchingTasksState(
+                          filter: _filter,
+                          hasLabelFilter: _labelFilterId != null,
+                        )
                       : ListView.separated(
                           padding: const EdgeInsets.only(bottom: 96),
                           itemCount: filteredEntries.length,
@@ -498,7 +627,10 @@ class _TasksDetailViewState extends State<_TasksDetailView> {
                                         : null,
                                   ),
                                 ),
-                                subtitle: _EntrySubtitle(entry: entry),
+                                subtitle: _EntrySubtitle(
+                                  entry: entry,
+                                  label: widget.module._labelFor(entry.labelId),
+                                ),
                                 trailing: PopupMenuButton<String>(
                                   onSelected: (action) {
                                     if (action == 'edit') {
@@ -532,60 +664,124 @@ class _TasksDetailViewState extends State<_TasksDetailView> {
     );
   }
 
+  PreferredSizeWidget _buildAppBar() {
+    return AppBar(
+      title: const Text('Tasks & Reminders'),
+      actions: [
+        IconButton(
+          key: const Key('tasks_create_label_button'),
+          tooltip: 'Create label',
+          onPressed: _createLabel,
+          icon: const Icon(Icons.label_outline),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _createLabel() async {
+    final result = await showDialog<({String name, _TaskLabelColor color})>(
+      context: context,
+      builder: (context) => const _TaskLabelEditorDialog(),
+    );
+    if (result == null) return;
+    if (!mounted) return;
+    final duplicate = widget.module._labels.any(
+      (label) => label.name.toLowerCase() == result.name.toLowerCase(),
+    );
+    if (duplicate) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('A label with that name already exists.')),
+      );
+      return;
+    }
+    await widget.module._addLabel(result.name, result.color);
+    if (mounted) setState(() {});
+  }
+
   Widget _buildControls() {
-    return Row(
+    return Column(
       children: [
-        Expanded(
-          child: DropdownButtonFormField<_TaskFilter>(
-            key: const Key('tasks_filter_dropdown'),
-            initialValue: _filter,
+        Row(
+          children: [
+            Expanded(
+              child: DropdownButtonFormField<_TaskFilter>(
+                key: const Key('tasks_filter_dropdown'),
+                initialValue: _filter,
+                isExpanded: true,
+                decoration: const InputDecoration(
+                  labelText: 'Filter',
+                  border: OutlineInputBorder(),
+                  contentPadding: EdgeInsets.symmetric(horizontal: 12),
+                ),
+                items: _TaskFilter.values
+                    .map(
+                      (filter) => DropdownMenuItem(
+                        value: filter,
+                        child: Text(_filterLabel(filter)),
+                      ),
+                    )
+                    .toList(),
+                onChanged: (filter) {
+                  if (filter != null) {
+                    setState(() => _filter = filter);
+                  }
+                },
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: DropdownButtonFormField<_TaskSort>(
+                key: const Key('tasks_sort_dropdown'),
+                initialValue: _sort,
+                isExpanded: true,
+                decoration: const InputDecoration(
+                  labelText: 'Sort by',
+                  border: OutlineInputBorder(),
+                  contentPadding: EdgeInsets.symmetric(horizontal: 12),
+                ),
+                items: _TaskSort.values
+                    .map(
+                      (sort) => DropdownMenuItem(
+                        value: sort,
+                        child: Text(_sortLabel(sort)),
+                      ),
+                    )
+                    .toList(),
+                onChanged: (sort) {
+                  if (sort != null) {
+                    setState(() => _sort = sort);
+                  }
+                },
+              ),
+            ),
+          ],
+        ),
+        if (widget.module._labels.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          DropdownButtonFormField<String?>(
+            key: const Key('tasks_label_filter_dropdown'),
+            initialValue: _labelFilterId,
             isExpanded: true,
             decoration: const InputDecoration(
-              labelText: 'Filter',
+              labelText: 'Filter by label',
               border: OutlineInputBorder(),
               contentPadding: EdgeInsets.symmetric(horizontal: 12),
             ),
-            items: _TaskFilter.values
-                .map(
-                  (filter) => DropdownMenuItem(
-                    value: filter,
-                    child: Text(_filterLabel(filter)),
-                  ),
-                )
-                .toList(),
-            onChanged: (filter) {
-              if (filter != null) {
-                setState(() => _filter = filter);
-              }
-            },
+            items: [
+              const DropdownMenuItem<String?>(
+                value: null,
+                child: Text('All labels'),
+              ),
+              ...widget.module._labels.map(
+                (label) => DropdownMenuItem<String?>(
+                  value: label.id,
+                  child: Text(label.name),
+                ),
+              ),
+            ],
+            onChanged: (labelId) => setState(() => _labelFilterId = labelId),
           ),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: DropdownButtonFormField<_TaskSort>(
-            key: const Key('tasks_sort_dropdown'),
-            initialValue: _sort,
-            isExpanded: true,
-            decoration: const InputDecoration(
-              labelText: 'Sort by',
-              border: OutlineInputBorder(),
-              contentPadding: EdgeInsets.symmetric(horizontal: 12),
-            ),
-            items: _TaskSort.values
-                .map(
-                  (sort) => DropdownMenuItem(
-                    value: sort,
-                    child: Text(_sortLabel(sort)),
-                  ),
-                )
-                .toList(),
-            onChanged: (sort) {
-              if (sort != null) {
-                setState(() => _sort = sort);
-              }
-            },
-          ),
-        ),
+        ],
       ],
     );
   }
@@ -594,6 +790,9 @@ class _TasksDetailViewState extends State<_TasksDetailView> {
     final now = DateTime.now();
     final today = DateTime(now.year, now.month, now.day);
     final matchingEntries = entries.where((entry) {
+      if (_labelFilterId != null && entry.labelId != _labelFilterId) {
+        return false;
+      }
       final dueAt = entry.dueAt;
       switch (_filter) {
         case _TaskFilter.all:
@@ -628,6 +827,7 @@ class _TasksDetailViewState extends State<_TasksDetailView> {
         _TaskSort.title => a.title.toLowerCase().compareTo(
           b.title.toLowerCase(),
         ),
+        _TaskSort.label => _compareLabels(a.labelId, b.labelId),
       };
       return comparison != 0
           ? comparison
@@ -651,6 +851,14 @@ class _TasksDetailViewState extends State<_TasksDetailView> {
     return descending ? -comparison : comparison;
   }
 
+  int _compareLabels(String? a, String? b) {
+    final labelA = widget.module._labelFor(a)?.name;
+    final labelB = widget.module._labelFor(b)?.name;
+    if (labelA == null) return labelB == null ? 0 : 1;
+    if (labelB == null) return -1;
+    return labelA.toLowerCase().compareTo(labelB.toLowerCase());
+  }
+
   static DateTime _startOfDay(DateTime date) =>
       DateTime(date.year, date.month, date.day);
 
@@ -670,6 +878,7 @@ class _TasksDetailViewState extends State<_TasksDetailView> {
     _TaskSort.dueSoonest => 'Soonest due',
     _TaskSort.dueLatest => 'Latest due',
     _TaskSort.title => 'Title A–Z',
+    _TaskSort.label => 'Label A–Z',
   };
 }
 
@@ -719,9 +928,13 @@ class _EmptyTasksState extends StatelessWidget {
 }
 
 class _NoMatchingTasksState extends StatelessWidget {
-  const _NoMatchingTasksState({required this.filter});
+  const _NoMatchingTasksState({
+    required this.filter,
+    required this.hasLabelFilter,
+  });
 
   final _TaskFilter filter;
+  final bool hasLabelFilter;
 
   @override
   Widget build(BuildContext context) {
@@ -733,14 +946,17 @@ class _NoMatchingTasksState extends StatelessWidget {
       _TaskFilter.noDueDate => 'No tasks without a due date.',
       _TaskFilter.completed => 'No completed tasks.',
     };
-    return Center(child: Text(message));
+    return Center(
+      child: Text(hasLabelFilter ? 'No tasks match this label.' : message),
+    );
   }
 }
 
 class _EntrySubtitle extends StatelessWidget {
-  const _EntrySubtitle({required this.entry});
+  const _EntrySubtitle({required this.entry, this.label});
 
   final _TaskEntry entry;
+  final _TaskLabel? label;
 
   @override
   Widget build(BuildContext context) {
@@ -773,14 +989,120 @@ class _EntrySubtitle extends StatelessWidget {
     if (entry.notes.isNotEmpty) {
       details.add(entry.notes);
     }
-    return Text(details.isEmpty ? 'Task' : details.join(' · '));
+    return Wrap(
+      spacing: 6,
+      runSpacing: 4,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: [
+        Text(details.isEmpty ? 'Task' : details.join(' · ')),
+        if (label != null)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+            decoration: BoxDecoration(
+              color: label!.color.value.withValues(alpha: 0.15),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Text(
+              label!.name,
+              style: TextStyle(
+                color: label!.color.value,
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _TaskLabelEditorDialog extends StatefulWidget {
+  const _TaskLabelEditorDialog();
+
+  @override
+  State<_TaskLabelEditorDialog> createState() => _TaskLabelEditorDialogState();
+}
+
+class _TaskLabelEditorDialogState extends State<_TaskLabelEditorDialog> {
+  final TextEditingController _nameController = TextEditingController();
+  _TaskLabelColor _color = _TaskLabelColor.blue;
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    super.dispose();
+  }
+
+  void _save() {
+    final name = _nameController.text.trim();
+    if (name.isEmpty) return;
+    Navigator.pop(context, (name: name, color: _color));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Create label'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          TextField(
+            key: const Key('task_label_name_field'),
+            controller: _nameController,
+            autofocus: true,
+            textCapitalization: TextCapitalization.words,
+            decoration: const InputDecoration(
+              labelText: 'Label name',
+              border: OutlineInputBorder(),
+            ),
+            onSubmitted: (_) => _save(),
+          ),
+          const SizedBox(height: 12),
+          DropdownButtonFormField<_TaskLabelColor>(
+            key: const Key('task_label_color_dropdown'),
+            initialValue: _color,
+            decoration: const InputDecoration(
+              labelText: 'Color',
+              border: OutlineInputBorder(),
+            ),
+            items: _TaskLabelColor.values
+                .map(
+                  (color) => DropdownMenuItem(
+                    value: color,
+                    child: Row(
+                      children: [
+                        Icon(Icons.circle, size: 16, color: color.value),
+                        const SizedBox(width: 8),
+                        Text(
+                          color.name[0].toUpperCase() + color.name.substring(1),
+                        ),
+                      ],
+                    ),
+                  ),
+                )
+                .toList(),
+            onChanged: (color) {
+              if (color != null) setState(() => _color = color);
+            },
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(onPressed: _save, child: const Text('Save')),
+      ],
+    );
   }
 }
 
 class _TaskEditorDialog extends StatefulWidget {
-  const _TaskEditorDialog({this.entry});
+  const _TaskEditorDialog({this.entry, required this.labels});
 
   final _TaskEntry? entry;
+  final List<_TaskLabel> labels;
 
   @override
   State<_TaskEditorDialog> createState() => _TaskEditorDialogState();
@@ -792,6 +1114,7 @@ class _TaskEditorDialogState extends State<_TaskEditorDialog> {
   late bool _isReminder;
   DateTime? _dueAt;
   int? _reminderMinutesBefore;
+  String? _labelId;
 
   @override
   void initState() {
@@ -801,6 +1124,7 @@ class _TaskEditorDialogState extends State<_TaskEditorDialog> {
     _isReminder = widget.entry?.isReminder ?? false;
     _dueAt = widget.entry?.dueAt;
     _reminderMinutesBefore = widget.entry?.reminderMinutesBefore;
+    _labelId = widget.entry?.labelId;
     _titleController.addListener(_updateDueAtFromText);
     _notesController.addListener(_updateDueAtFromText);
   }
@@ -874,6 +1198,7 @@ class _TaskEditorDialogState extends State<_TaskEditorDialog> {
         isReminder: _isReminder,
         dueAt: _dueAt,
         reminderMinutesBefore: _reminderMinutesBefore,
+        labelId: _labelId,
       ),
     );
   }
@@ -913,6 +1238,29 @@ class _TaskEditorDialogState extends State<_TaskEditorDialog> {
                 labelText: 'Notes',
                 hintText: 'Extra Details',
               ),
+            ),
+            const SizedBox(height: 12),
+            DropdownButtonFormField<String?>(
+              key: const Key('task_label_dropdown'),
+              initialValue: _labelId,
+              isExpanded: true,
+              decoration: const InputDecoration(
+                labelText: 'Label',
+                border: OutlineInputBorder(),
+              ),
+              items: [
+                const DropdownMenuItem<String?>(
+                  value: null,
+                  child: Text('No label'),
+                ),
+                ...widget.labels.map(
+                  (label) => DropdownMenuItem<String?>(
+                    value: label.id,
+                    child: Text(label.name),
+                  ),
+                ),
+              ],
+              onChanged: (labelId) => setState(() => _labelId = labelId),
             ),
             SwitchListTile.adaptive(
               contentPadding: EdgeInsets.zero,
