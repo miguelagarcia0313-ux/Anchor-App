@@ -153,6 +153,76 @@ void main() {
     expect(find.text('Open task'), findsNothing);
   });
 
+  testWidgets('creates reusable colored labels and filters by label', (
+    WidgetTester tester,
+  ) async {
+    final module = TasksModule();
+
+    await tester.pumpWidget(_detailApp(module));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('tasks_create_label_button')));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const Key('task_label_name_field')),
+      'Work',
+    );
+    await tester.tap(find.byKey(const Key('task_label_color_dropdown')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Purple').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Add Task/Reminder'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField).first, 'Prepare report');
+    await tester.tap(find.byKey(const Key('task_label_dropdown')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Work').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Add Task/Reminder'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField).first, 'Buy groceries');
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pumpAndSettle();
+
+    final workLabel = tester.widget<Text>(find.text('Work').first);
+    expect(workLabel.style?.color, Colors.purple);
+
+    await tester.tap(find.byKey(const Key('tasks_sort_dropdown')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Title A–Z').last);
+    await tester.pumpAndSettle();
+    expect(
+      tester.getTopLeft(find.text('Buy groceries')).dy,
+      lessThan(tester.getTopLeft(find.text('Prepare report')).dy),
+    );
+    await tester.tap(find.byKey(const Key('tasks_sort_dropdown')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Label A–Z').last);
+    await tester.pumpAndSettle();
+    expect(
+      tester.getTopLeft(find.text('Prepare report')).dy,
+      lessThan(tester.getTopLeft(find.text('Buy groceries')).dy),
+    );
+
+    await tester.tap(find.byKey(const Key('tasks_label_filter_dropdown')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Work').last);
+    await tester.pumpAndSettle();
+    expect(find.text('Prepare report'), findsOneWidget);
+    expect(find.text('Buy groceries'), findsNothing);
+
+    final restoredModule = TasksModule();
+    await tester.pumpWidget(_detailApp(restoredModule));
+    await tester.pumpAndSettle();
+    expect(find.text('Prepare report'), findsOneWidget);
+    expect(find.text('Work'), findsNWidgets(2));
+  });
+
   testWidgets('filters upcoming tasks and sorts by latest due date', (
     WidgetTester tester,
   ) async {
