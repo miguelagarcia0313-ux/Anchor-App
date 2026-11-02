@@ -6,6 +6,7 @@ import '../modules/finance/finance_module.dart';
 import '../modules/fitness/fitness.dart';
 import '../modules/health/health_module.dart';
 import '../modules/tasks/tasks_module.dart';
+import '../modules/nutrition/nutrition_module.dart';
 import 'module_preferences.dart';
 import 'settings_screen.dart';
 
@@ -36,10 +37,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
   );
 
   late final List<AnchorModule> _allModules = [
-    FinanceModule(),
-    FitnessModule(),
-    _healthModule,
     _tasksModule,
+    _healthModule,
+    NutritionModule(),
+    FitnessModule(),
+    FinanceModule(),
+    
 
     ///Add new modules here. The module contract ensures that the dashboard
     ///screen doesn't need to know anything about the module's implementation.
