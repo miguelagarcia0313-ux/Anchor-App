@@ -16,7 +16,14 @@ import 'settings_screen.dart';
 /// Nothing else on this screen needs to change — that's the whole point
 /// of the module contract.
 class DashboardScreen extends StatefulWidget {
-  const DashboardScreen({super.key});
+  const DashboardScreen({
+    super.key,
+    required this.isDarkMode,
+    required this.onDarkModeChanged,
+  });
+
+  final bool isDarkMode;
+  final ValueChanged<bool> onDarkModeChanged;
 
   @override
   State<DashboardScreen> createState() => _DashboardScreenState();
@@ -127,6 +134,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
               modules: _allModules,
               enabledModuleIds: _enabledModuleIds,
               onModuleChanged: _toggleModule,
+              isDarkMode: widget.isDarkMode,
+              onDarkModeChanged: widget.onDarkModeChanged,
             ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _selectedTab,

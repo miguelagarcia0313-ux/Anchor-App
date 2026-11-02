@@ -8,21 +8,34 @@ class SettingsScreen extends StatelessWidget {
     required this.modules,
     required this.enabledModuleIds,
     required this.onModuleChanged,
+    required this.isDarkMode,
+    required this.onDarkModeChanged,
   });
 
   final List<AnchorModule> modules;
   final Set<String> enabledModuleIds;
   final ValueChanged<String> onModuleChanged;
+  final bool isDarkMode;
+  final ValueChanged<bool> onDarkModeChanged;
 
   @override
   Widget build(BuildContext context) {
     return ListView(
       padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
       children: [
-        Text(
-          'Modules',
-          style: Theme.of(context).textTheme.headlineSmall,
+        Text('Appearance', style: Theme.of(context).textTheme.headlineSmall),
+        const SizedBox(height: 4),
+        Card(
+          child: SwitchListTile(
+            value: isDarkMode,
+            onChanged: onDarkModeChanged,
+            secondary: const Icon(Icons.dark_mode_outlined),
+            title: const Text('Dark mode'),
+            subtitle: const Text('Use a darker appearance.'),
+          ),
         ),
+        const SizedBox(height: 12),
+        Text('Modules', style: Theme.of(context).textTheme.headlineSmall),
         const SizedBox(height: 4),
         const Text('Choose which modules appear on your dashboard.'),
         const SizedBox(height: 12),
