@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../../shared/trackable_entry.dart';
+import 'package:anchor_app/modules/finance/finance_limits.dart';   
 
 /// The Finance categories -- the single source of truth for keys and
 /// display names. The same list is enforced in firestore.rules
@@ -48,7 +49,7 @@ class _ManualEntryFormState extends State<ManualEntryForm> {
   final _amountController = TextEditingController();
   final _noteController = TextEditingController();
   String _selectedCategory = manualEntryCategories.first;
-  String? _errorText;
+  String? _amountError;
 
   @override
   void dispose() {
@@ -57,14 +58,22 @@ class _ManualEntryFormState extends State<ManualEntryForm> {
     super.dispose();
   }
 
-  void _handleSave() {
-    final amount = double.tryParse(_amountController.text);
+    void _handleSave() {
+    final amount = double.tryParse(
+      _amountController.text.trim().replaceAll(',', ''),
+    );
     if (amount == null || amount <= 0) {
-      setState(() => _errorText = 'Enter a valid amount greater than \$0');
+      setState(() => _amountError = 'Enter a valid amount greater than \$0');
       return;
     }
+    if (amount > kMaxManualExpense) {
+      setState(() => _amountError = 'Manual expenses can\'t exceed \$100,000');
+      return;
+    }
+    setState(() => _amountError = null);
 
     widget.onSubmit(
+
       TrackableEntry(
         id: DateTime.now().microsecondsSinceEpoch.toString(),
         moduleType: 'finance',
@@ -103,8 +112,8 @@ class _ManualEntryFormState extends State<ManualEntryForm> {
             decoration: InputDecoration(
               labelText: 'Amount',
               prefixText: '\$',
-              errorText: _errorText,
-            ),
+              errorText: _amountError,
+          ),
           ),
           const SizedBox(height: 12),
           DropdownButtonFormField<String>(
