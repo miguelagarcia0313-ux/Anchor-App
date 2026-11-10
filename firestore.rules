@@ -32,7 +32,7 @@ service cloud.firestore {
         && request.resource.data.source == 'manual'
         && request.resource.data.amount is number
         && request.resource.data.amount > 0
-        && request.resource.data.amount < 100000
+        && request.resource.data.amount <= 100000
         && request.resource.data.date is string
         && request.resource.data.date.size() == 10
         && isCategory(request.resource.data.autoCategory)
