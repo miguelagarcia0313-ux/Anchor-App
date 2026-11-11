@@ -3,11 +3,13 @@ import 'package:firebase_core/firebase_core.dart';
 
 import 'firebase_options.dart';
 import 'modules/auth/auth_gate.dart';
+import 'modules/tasks/task_notifications.dart';
 import 'shell/theme_preferences.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+  await TaskNotificationService.instance.initialize();
   const themePreferences = ThemePreferences();
   final isDarkMode = await themePreferences.load();
   runApp(
