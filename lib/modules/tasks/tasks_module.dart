@@ -3,10 +3,12 @@ import 'dart:convert';
 
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../shared/anchor_module.dart';
+import '../../shared/module_bottom_sheet.dart';
 import '../../shared/user_cloud_sync.dart';
 import 'task_date_parser.dart';
 
@@ -1165,13 +1167,41 @@ class _TaskEditorDialogState extends State<_TaskEditorDialog> {
     if (selectedDate == null || !mounted) {
       return;
     }
-    final selectedTime = await showTimePicker(
+    var selectedTime = _dueAt != null
+        ? TimeOfDay.fromDateTime(_dueAt!)
+        : TimeOfDay.fromDateTime(now);
+    final confirmedTime = await showModalBottomSheet<TimeOfDay>(
       context: context,
-      initialTime: _dueAt != null
-          ? TimeOfDay.fromDateTime(_dueAt!)
-          : TimeOfDay.fromDateTime(now),
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (context) => ModuleBottomSheet(
+        title: 'Set reminder time',
+        actions: SizedBox(
+          width: double.infinity,
+          child: FilledButton(
+            onPressed: () => Navigator.pop(context, selectedTime),
+            child: const Text('Save'),
+          ),
+        ),
+        child: SizedBox(
+          height: 200,
+          child: CupertinoDatePicker(
+            mode: CupertinoDatePickerMode.time,
+            initialDateTime: DateTime(
+              2000,
+              1,
+              1,
+              selectedTime.hour,
+              selectedTime.minute,
+            ),
+            onDateTimeChanged: (value) {
+              selectedTime = TimeOfDay.fromDateTime(value);
+            },
+          ),
+        ),
+      ),
     );
-    if (selectedTime == null || !mounted) {
+    if (confirmedTime == null || !mounted) {
       return;
     }
     setState(() {
@@ -1179,8 +1209,8 @@ class _TaskEditorDialogState extends State<_TaskEditorDialog> {
         selectedDate.year,
         selectedDate.month,
         selectedDate.day,
-        selectedTime.hour,
-        selectedTime.minute,
+        confirmedTime.hour,
+        confirmedTime.minute,
       );
     });
   }

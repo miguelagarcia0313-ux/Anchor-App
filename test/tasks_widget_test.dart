@@ -1,3 +1,4 @@
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -321,6 +322,31 @@ void main() {
 
     expect(find.textContaining('at 11:00 PM'), findsOneWidget);
     expect(find.textContaining('Reminder · '), findsOneWidget);
+  });
+
+  testWidgets('selects a manual due time with a scroll wheel', (
+    WidgetTester tester,
+  ) async {
+    final module = TasksModule();
+
+    await tester.pumpWidget(_detailApp(module));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Add Task/Reminder'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField).first, 'Manual reminder');
+    await tester.tap(find.text('Set due date and time'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('OK'));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(CupertinoDatePicker), findsOneWidget);
+    expect(find.byType(TimePickerDialog), findsNothing);
+
+    await tester.tap(find.widgetWithText(FilledButton, 'Save').last);
+    await tester.pumpAndSettle();
+
+    expect(find.byType(CupertinoDatePicker), findsNothing);
+    expect(find.textContaining(' at '), findsOneWidget);
   });
 
 testWidgets('uses the specific date in a task title', (
