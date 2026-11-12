@@ -123,4 +123,21 @@ def step_check_each_category_amounts(context):
         context.driver.execute_script("flutter:waitFor", amount_finder)
         element = FlutterElement(context.driver, amount_finder)
         assert "$" in element.text, f"Expected a dollar amount for {category}, got: {element.text}"
- 
+
+@when('I enter "{amount}" as the amount')
+def step_enter_amount(context, amount):
+    field = FlutterElement(context.driver, finder.by_value_key('manual_entry_amount_field'))
+    field.send_keys(amount)
+
+@when('I tap Save')
+def step_tap_save(context):
+    FlutterElement(context.driver, finder.by_value_key('manual_entry_save_button')).click()
+
+@then('I should see the amount error "{message}"')
+def step_see_error(context, message):
+    context.driver.execute_script('flutter:waitFor', finder.by_text(message), 5000)
+
+@then('the manual entry form should still be open')
+def step_form_open(context):
+    context.driver.execute_script(
+        'flutter:waitFor', finder.by_value_key('manual_entry_save_button'), 2000)
