@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../shared/anchor_module.dart';
 import '../../shared/user_cloud_sync.dart';
+import 'task_notifications.dart';
 import 'task_date_parser.dart';
 
 bool _isDateOnlyDueAt(DateTime date) =>
@@ -56,6 +57,7 @@ const _reminderLeadTimeLabels = <int, String>{
   5: '5 minutes before',
   10: '10 minutes before',
   15: '15 minutes before',
+  20: '20 minutes before',
   30: '30 minutes before',
   60: '1 hour before',
   120: '2 hours before',
@@ -219,7 +221,7 @@ class TasksModule implements AnchorModule {
     _revision.value++;
   }
 
-  Future<void> _addEntry(_TaskDraft draft) async {
+  Future<NotificationPermissionStatus?> _addEntry(_TaskDraft draft) async {
     final entry = _TaskEntry(
       id: DateTime.now().microsecondsSinceEpoch.toString(),
       title: draft.title,
@@ -231,10 +233,15 @@ class TasksModule implements AnchorModule {
     );
     _entries.add(entry);
     _notifyChanged();
-    await _persistEntries();
+    return _persistEntries(
+      requestNotificationPermission: _willScheduleNotification(entry),
+    );
   }
 
-  Future<void> _updateEntry(_TaskEntry entry, _TaskDraft draft) async {
+  Future<NotificationPermissionStatus?> _updateEntry(
+    _TaskEntry entry,
+    _TaskDraft draft,
+  ) async {
     entry
       ..title = draft.title
       ..notes = draft.notes
@@ -243,7 +250,9 @@ class TasksModule implements AnchorModule {
       ..reminderMinutesBefore = draft.reminderMinutesBefore
       ..labelId = draft.labelId;
     _notifyChanged();
-    await _persistEntries();
+    return _persistEntries(
+      requestNotificationPermission: _willScheduleNotification(entry),
+    );
   }
 
   String get _labelsStorageKey => 'tasks.$userId.labels';
@@ -388,7 +397,10 @@ class TasksModule implements AnchorModule {
       );
     _notifyChanged();
     final cloud = _cloud;
-    if (cloud == null) return;
+    if (cloud == null) {
+      await _synchronizeNotifications();
+      return;
+    }
     await cloud.migrateLocalDataOnce('tasks', () async {
       await cloud.setRecords(
         'tasks',
@@ -416,7 +428,7 @@ class TasksModule implements AnchorModule {
                 }),
               );
             _notifyChanged();
-            unawaited(_persistEntriesLocally());
+            unawaited(_handleCloudEntries(cloud));
           },
           onError: (Object error, StackTrace stackTrace) {
             cloud.reportStreamError('tasks', error, stackTrace);
@@ -441,15 +453,59 @@ class TasksModule implements AnchorModule {
             cloud.reportStreamError('tasks', error, stackTrace);
           },
         );
+    await _synchronizeNotifications();
   }
 
-  Future<void> _persistEntries() async {
+  Future<NotificationPermissionStatus?> _persistEntries({
+    bool requestNotificationPermission = false,
+  }) async {
     await _persistEntriesLocally();
     await _cloud?.replaceRecords(
       'tasks',
       'entries',
       _entries.map((entry) => MapEntry(entry.id, entry.toMap())),
     );
+    final permissionStatus =
+        requestNotificationPermission &&
+            TaskNotificationService.instance.isInitialized
+        ? await TaskNotificationService.instance.requestPermissions()
+        : null;
+    await _synchronizeNotifications();
+    return permissionStatus;
+  }
+
+  bool _hasNotification(_TaskEntry entry) =>
+      entry.dueAt != null && entry.reminderMinutesBefore != null;
+
+  bool _willScheduleNotification(_TaskEntry entry) =>
+      _hasNotification(entry) &&
+      entry.dueAt!
+          .subtract(Duration(minutes: entry.reminderMinutesBefore!))
+          .isAfter(DateTime.now());
+
+  Future<void> _synchronizeNotifications() async {
+    await TaskNotificationService.instance.synchronize(
+      _entries
+          .where(_hasNotification)
+          .where((entry) => !entry.isComplete)
+          .map(
+            (entry) => TaskNotification(
+              id: entry.id,
+              title: entry.title,
+              dueAt: entry.dueAt!,
+              minutesBefore: entry.reminderMinutesBefore!,
+            ),
+          ),
+    );
+  }
+
+  Future<void> _handleCloudEntries(UserCloudSync cloud) async {
+    try {
+      await _persistEntriesLocally();
+      await _synchronizeNotifications();
+    } catch (error, stackTrace) {
+      cloud.reportStreamError('tasks', error, stackTrace);
+    }
   }
 
   Future<void> _persistEntriesLocally() async {
@@ -514,7 +570,8 @@ class _TasksDetailViewState extends State<_TasksDetailView> {
       builder: (context) => _TaskEditorDialog(labels: widget.module._labels),
     );
     if (draft != null) {
-      await widget.module._addEntry(draft);
+      final permissionStatus = await widget.module._addEntry(draft);
+      _showNotificationPermissionStatus(permissionStatus);
       setState(() {});
     }
   }
@@ -526,8 +583,22 @@ class _TasksDetailViewState extends State<_TasksDetailView> {
           _TaskEditorDialog(entry: entry, labels: widget.module._labels),
     );
     if (draft != null) {
-      await widget.module._updateEntry(entry, draft);
+      final permissionStatus = await widget.module._updateEntry(entry, draft);
+      _showNotificationPermissionStatus(permissionStatus);
       setState(() {});
+    }
+  }
+
+  void _showNotificationPermissionStatus(NotificationPermissionStatus? status) {
+    if (status == null) return;
+    final message = !status.notificationsAllowed
+        ? 'Reminder saved, but notifications are blocked in device settings.'
+        : !status.exactAlarmsAllowed
+        ? 'Reminder saved. Android may deliver it later because exact alarms are off.'
+        : null;
+    if (message != null && mounted) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(message)));
     }
   }
 
@@ -1314,8 +1385,8 @@ class _TaskEditorDialogState extends State<_TaskEditorDialog> {
             const Align(
               alignment: Alignment.centerLeft,
               child: Text(
-                'This setting is saved for future notifications. '
-                'Notifications are not sent yet.',
+                'Notifications are scheduled on this device. Allow notification '
+                'permission when prompted.',
                 style: TextStyle(fontSize: 12),
               ),
             ),

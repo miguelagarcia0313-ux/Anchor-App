@@ -49,6 +49,7 @@ void main() {
     await tester.pump();
     await tester.tap(find.byKey(const Key('task_reminder_lead_time_dropdown')));
     await tester.pumpAndSettle();
+    expect(find.text('20 minutes before').last, findsOneWidget);
     await tester.tap(find.text('10 minutes before').last);
     await tester.pumpAndSettle();
     await tester.tap(find.text('Save'));
@@ -60,12 +61,12 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.textContaining('Notification: 10 minutes before'), findsOneWidget);
-    await tester.tap(find.text('Call dentist 3AM Wednesday'));
-    await tester.pumpAndSettle();
     expect(
-      find.text('10 minutes before'),
+      find.textContaining('Notification: 10 minutes before'),
       findsOneWidget,
     );
+    await tester.tap(find.text('Call dentist 3AM Wednesday'));
+    await tester.pumpAndSettle();
+    expect(find.text('10 minutes before'), findsOneWidget);
   });
 }
